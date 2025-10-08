@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1759952499832,
+  "lastUpdate": 1759960615728,
   "repoUrl": "https://github.com/paritytech/polkadot-sdk",
   "entries": {
     "availability-recovery-regression-bench": [
-      {
-        "commit": {
-          "author": {
-            "email": "95745674+todortodorovic@users.noreply.github.com",
-            "name": "todortodorovic",
-            "username": "todortodorovic"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "cb3ede64eeefa64a5f0e79df28272eb9814c2604",
-          "message": "chore: idiomatic rust cleanup (#8163)\n\nDescription\n\nThis PR performs a series of non-functional refactors across multiple\nfiles to improve code readability and consistency.\n\nKey changes include:\n• Replacing verbose pattern matches with shorter .ok(), .err(), or\n.ok_or()? alternatives.\n• Using div_ceil() instead of manual (x + 1) / 2 calculations for better\nclarity.\n\t•\tRemoving redundant .clone().take() patterns to simplify logic.\n• Applying consistent and idiomatic Rust expressions throughout the\ncodebase.\n\nThese changes do not affect runtime functionality, but improve\nmaintainability and align the code with modern Rust practices.\n\nIntegration\n\nNo integration steps are required. These are non-functional refactors\nthat do not alter the runtime behavior or public APIs. Downstream\nprojects should experience no impact.\n\nReview Notes\n\nAll changes are cosmetic or idiomatic improvements:\n\t•\tEach change was tested to ensure it preserves the original behavior.\n\t•\tFocus was on readability, simplicity, and reducing redundancy.\n\t•\tNo logic paths were altered; only how those paths are expressed.\n\n---------\n\nCo-authored-by: cmd[bot] <41898282+github-actions[bot]@users.noreply.github.com>\nCo-authored-by: Oliver Tale-Yazdi <oliver.tale-yazdi@parity.io>\nCo-authored-by: Dónal Murray <donal.murray@parity.io>",
-          "timestamp": "2025-04-08T16:13:39Z",
-          "tree_id": "ae7c2fd440ee0dd5c9519cc600b01c88cf84a280",
-          "url": "https://github.com/paritytech/polkadot-sdk/commit/cb3ede64eeefa64a5f0e79df28272eb9814c2604"
-        },
-        "date": 1744132273271,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "Received from peers",
-            "value": 307203,
-            "unit": "KiB"
-          },
-          {
-            "name": "Sent to peers",
-            "value": 1.6666666666666665,
-            "unit": "KiB"
-          },
-          {
-            "name": "test-environment",
-            "value": 0.19893586983333333,
-            "unit": "seconds"
-          },
-          {
-            "name": "availability-recovery",
-            "value": 11.285199565633338,
-            "unit": "seconds"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -21999,6 +21955,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "test-environment",
             "value": 0.19745244883333335,
+            "unit": "seconds"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "pgherveou@gmail.com",
+            "name": "PG Herveou",
+            "username": "pgherveou"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "b6c7f6e948b0d97d0907fc3475e35153d7670ec3",
+          "message": "pallet-revive update basefee instruction (#9945)\n\nThe base fee instruction now returns the proper base price instead of a\nhard coded value.\n\n---------\n\nCo-authored-by: Alexander Theißen <alex.theissen@me.com>\nCo-authored-by: cmd[bot] <41898282+github-actions[bot]@users.noreply.github.com>",
+          "timestamp": "2025-10-08T20:38:43Z",
+          "tree_id": "ce745e9150c1089c080fde908c63caec17e7b041",
+          "url": "https://github.com/paritytech/polkadot-sdk/commit/b6c7f6e948b0d97d0907fc3475e35153d7670ec3"
+        },
+        "date": 1759960591209,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "Received from peers",
+            "value": 307203,
+            "unit": "KiB"
+          },
+          {
+            "name": "Sent to peers",
+            "value": 1.6666666666666665,
+            "unit": "KiB"
+          },
+          {
+            "name": "availability-recovery",
+            "value": 11.394478015699999,
+            "unit": "seconds"
+          },
+          {
+            "name": "test-environment",
+            "value": 0.19770158713333336,
             "unit": "seconds"
           }
         ]
