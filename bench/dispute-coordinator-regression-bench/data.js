@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1759952615725,
+  "lastUpdate": 1759960746908,
   "repoUrl": "https://github.com/paritytech/polkadot-sdk",
   "entries": {
     "dispute-coordinator-regression-bench": [
@@ -11808,6 +11808,55 @@ window.BENCHMARK_DATA = {
           {
             "name": "dispute-coordinator",
             "value": 0.0026501654000000005,
+            "unit": "seconds"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "pgherveou@gmail.com",
+            "name": "PG Herveou",
+            "username": "pgherveou"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "b6c7f6e948b0d97d0907fc3475e35153d7670ec3",
+          "message": "pallet-revive update basefee instruction (#9945)\n\nThe base fee instruction now returns the proper base price instead of a\nhard coded value.\n\n---------\n\nCo-authored-by: Alexander Theißen <alex.theissen@me.com>\nCo-authored-by: cmd[bot] <41898282+github-actions[bot]@users.noreply.github.com>",
+          "timestamp": "2025-10-08T20:38:43Z",
+          "tree_id": "ce745e9150c1089c080fde908c63caec17e7b041",
+          "url": "https://github.com/paritytech/polkadot-sdk/commit/b6c7f6e948b0d97d0907fc3475e35153d7670ec3"
+        },
+        "date": 1759960722715,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "Received from peers",
+            "value": 23.800000000000004,
+            "unit": "KiB"
+          },
+          {
+            "name": "Sent to peers",
+            "value": 227.09999999999997,
+            "unit": "KiB"
+          },
+          {
+            "name": "dispute-coordinator",
+            "value": 0.0025955095200000007,
+            "unit": "seconds"
+          },
+          {
+            "name": "dispute-distribution",
+            "value": 0.008585115469999991,
+            "unit": "seconds"
+          },
+          {
+            "name": "test-environment",
+            "value": 0.005075182299999999,
             "unit": "seconds"
           }
         ]
