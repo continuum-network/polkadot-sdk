@@ -1,52 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1759952587626,
+  "lastUpdate": 1759960713975,
   "repoUrl": "https://github.com/paritytech/polkadot-sdk",
   "entries": {
     "statement-distribution-regression-bench": [
-      {
-        "commit": {
-          "author": {
-            "email": "49718502+alexggh@users.noreply.github.com",
-            "name": "Alexandru Gheorghe",
-            "username": "alexggh"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "64910adf74d14925ba49ead74a32e52f01185d0d",
-          "message": "benchmark: storage: Make read/write benchmarks more accurate (#7867)\n\nThere are a few problems with these read/write benchmarks which makes\nthem produce misleading results, especially when we enable the\ntrie-cache.\n\nThe problems are:\n- Both benchmarks run without PoV recorder enabled, that is not accurate\nfor parachains because without the PoV recorder, you can directly access\nthe key from the value cache, while with the PoV recorder you still need\nto do the walk through which uses the Node cache, e.g:\nhttps://github.com/paritytech/trie/blob/master/trie-db/src/lookup.rs#L446.\nTo fix this I added I parameter enable-pov-recorder which is meant to be\nused when generating the weights for parachains.\n- Every write measures both the time to update the key and to compute\nthe storage root and commit all the changes, which is not accurate\nbecause the storage root is computed only once at the end of the block.\nFor this I added a new argument --batch-size, which is used to determine\nhow many keys to update and performs the storage root computation only\nonce, it then calculate the per key write cost as `durations /\nbatch-size`.\n- For reads when you run with the PoV recorder, there is also a benefit\nfrom running with the same recorder rather than creating a different\nrecorder every read, so we again use the `batch-size` for than to obtain\nthe amortised cost of a read.\n- bench warmup seemed to not warmup child keys even when\n`include-child-trees`, so I fixed that as well\n\n## Results on reference hardware, asset-hub-westend state\n| Setup | Batch size| Amortized cost of a key write(**ns**) | Amortized\ncost of a key read(**ns**)|\n|--------|--------|--------|--------|\n|Without TrieCache, Without PoV Recorder|1|88_521|46_981|\n|Without TrieCache, With PoV Recorder|1|95_161|48_711|\n|With TrieCache, Without PoV Recorder|1|66_008|528|\n|With TrieCache, With PoV Recorder|1|73_145|12_142|\n|Without TrieCache, Without PoV Recorder|1000|52_646|72_434|\n|Without TrieCache, With PoV Recorder|1000|54_896|50_267|\n|With TrieCache, Without PoV Recorder|1000|30_585|497|\n|With TrieCache, With PoV Recorder|1000|33_765|6_928|\n|Without TrieCache, Without PoV Recorder|10_000|48_945|52_730|\n|Without TrieCache, With PoV Recorder|10_000|50_285|49_860|\n|With TrieCache, Without PoV Recorder|10_000|25_903|484|\n|With TrieCache, With PoV Recorder|10_000|28_417|7_153|\n|Without TrieCache, Without PoV Recorder|100_000|31_359|45_839|\n|Without TrieCache, With PoV Recorder|100_000|32_932|48_393|\n|With TrieCache, Without PoV Recorder|100_000|20_255|493|\n|*With TrieCache, With PoV Recorder*, to be used|100_000|21_998|6_908|\n\n## Results on reference hardware asset-hub-polkadot state\n| Setup | Batch size| Amortized cost of a key write(**ns**) | Amortized\ncost of a key read(**ns**)|\n|--------|--------|--------|--------|\n|Without TrieCache, Without PoV Recorder|1|102_239|56_209|\n|Without TrieCache, With PoV Recorder|1|106_659|54_256|\n|With TrieCache, Without PoV Recorder|1|85_419|608|\n|With TrieCache, With PoV Recorder|1|95_221|13_567|\n|Without TrieCache, Without PoV Recorder|1000|61_574|53_767|\n|Without TrieCache, With PoV Recorder|1000|64_770|66_162|\n|With TrieCache, Without PoV Recorder|1000|35_879|597|\n|With TrieCache, With PoV Recorder|1000|39_464|8_482|\n|Without TrieCache, Without PoV Recorder|10_000|62_465|58_236|\n|Without TrieCache, With PoV Recorder|10_000|65_082|95_118|\n|With TrieCache, Without PoV Recorder|10_000|32_259|601|\n|With TrieCache, With PoV Recorder|10_000|34_620|8_810|\n|Without TrieCache, Without PoV Recorder|100_000|43_794|69_157|\n|Without TrieCache, With PoV Recorder|100_000|45_060|66_343|\n|With TrieCache, Without PoV Recorder|100_000|25_327|596|\n|*With TrieCache, With PoV Recorder*, to be used|100_000|27_622|8_598|\n\n## Results on my local machine with westend-assethub state.\n| Setup | Batch size| Amortized cost of a key write(**ns**) | Amortized\ncost of a key read(**ns**)|\n|--------|--------|--------|--------|\n|Without TrieCache, Without PoV Recorder|1| 55_443|27_510|\n|Without TrieCache, With PoV Recorder|1|143_189|105_103|\n|With TrieCache, Without PoV Recorder|1|37_519|370|\n|With TrieCache, With PoV Recorder|1|42_569|7_309|\n|Without TrieCache, Without PoV Recorder|1000| 29_364|25_150|\n|Without TrieCache, With PoV Recorder|1000|33_221|107_349|\n|With TrieCache, Without PoV Recorder|1000|18_355|370|\n|With TrieCache, With PoV Recorder|1000|19_883|4_063|\n|Without TrieCache, Without PoV Recorder|10_000| 28_336|27_765|\n|Without TrieCache, With PoV Recorder|10_000|29_673|62_392|\n|With TrieCache, Without PoV Recorder|10_000|15_102|370|\n|With TrieCache, With PoV Recorder|10_000|16_461|4_124|\n|Without TrieCache, Without PoV Recorder|100_000| 18_935|27_151|\n|Without TrieCache, With PoV Recorder|100_000|19_681|48_393|\n|With TrieCache, Without PoV Recorder|100_000|12_569|362|\n|*With TrieCache, With PoV Recorder*, to be used|100_000|13_469|3_895|\n\n\nFixes: https://github.com/paritytech/polkadot-sdk/issues/7535\n\n## Todo:\n- [x] Run this benchmarks on reference hardware on configuration variant\nclosest to the production environment.\n\n---------\n\nSigned-off-by: Alexandru Gheorghe <alexandru.gheorghe@parity.io>\nCo-authored-by: Bastian Köcher <git@kchr.de>",
-          "timestamp": "2025-04-08T10:23:53Z",
-          "tree_id": "60b7e77c7372cf37eec83f8a0b3615ca97f05e5e",
-          "url": "https://github.com/paritytech/polkadot-sdk/commit/64910adf74d14925ba49ead74a32e52f01185d0d"
-        },
-        "date": 1744111700308,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "Sent to peers",
-            "value": 127.96399999999998,
-            "unit": "KiB"
-          },
-          {
-            "name": "Received from peers",
-            "value": 106.39999999999996,
-            "unit": "KiB"
-          },
-          {
-            "name": "statement-distribution",
-            "value": 0.033970639482000006,
-            "unit": "seconds"
-          },
-          {
-            "name": "test-environment",
-            "value": 0.045014060185999946,
-            "unit": "seconds"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -21999,6 +21955,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "test-environment",
             "value": 0.04475543826599995,
+            "unit": "seconds"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "pgherveou@gmail.com",
+            "name": "PG Herveou",
+            "username": "pgherveou"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "b6c7f6e948b0d97d0907fc3475e35153d7670ec3",
+          "message": "pallet-revive update basefee instruction (#9945)\n\nThe base fee instruction now returns the proper base price instead of a\nhard coded value.\n\n---------\n\nCo-authored-by: Alexander Theißen <alex.theissen@me.com>\nCo-authored-by: cmd[bot] <41898282+github-actions[bot]@users.noreply.github.com>",
+          "timestamp": "2025-10-08T20:38:43Z",
+          "tree_id": "ce745e9150c1089c080fde908c63caec17e7b041",
+          "url": "https://github.com/paritytech/polkadot-sdk/commit/b6c7f6e948b0d97d0907fc3475e35153d7670ec3"
+        },
+        "date": 1759960690171,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "Received from peers",
+            "value": 106.39999999999996,
+            "unit": "KiB"
+          },
+          {
+            "name": "Sent to peers",
+            "value": 127.97,
+            "unit": "KiB"
+          },
+          {
+            "name": "test-environment",
+            "value": 0.04497342926999995,
+            "unit": "seconds"
+          },
+          {
+            "name": "statement-distribution",
+            "value": 0.034499127736000015,
             "unit": "seconds"
           }
         ]
