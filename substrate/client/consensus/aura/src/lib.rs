@@ -171,9 +171,9 @@ pub fn start_aura<P, B, C, SC, I, PF, SO, L, CIDP, BS, Error>(
 	}: StartAuraParams<C, SC, I, PF, SO, L, CIDP, BS, NumberFor<B>>,
 ) -> Result<impl Future<Output = ()>, ConsensusError>
 where
-	P: Pair,
-	P::Public: AppPublic + Member,
-	P::Signature: TryFrom<Vec<u8>> + Member + Codec,
+	P: Pair + sp_application_crypto::AppCrypto<Public = <P as Pair>::Public, Signature = <P as Pair>::Signature>,
+	<P as Pair>::Public: AppPublic + Member + std::fmt::Debug,
+	<P as Pair>::Signature: TryFrom<Vec<u8>> + Member + Codec,
 	B: BlockT,
 	C: ProvideRuntimeApi<B> + BlockOf + AuxStore + HeaderBackend<B> + Send + Sync,
 	C::Api: AuraApi<B, AuthorityId<P>>,
@@ -271,7 +271,7 @@ pub fn build_aura_worker<P, B, C, PF, I, SO, L, BS, Error>(
 	BlockImport = I,
 	SyncOracle = SO,
 	JustificationSyncLink = L,
-	Claim = P::Public,
+	Claim = <P as Pair>::Public,
 	AuxData = Vec<AuthorityId<P>>,
 >
 where
@@ -280,9 +280,9 @@ where
 	C::Api: AuraApi<B, AuthorityId<P>>,
 	PF: Environment<B, Error = Error> + Send + Sync + 'static,
 	PF::Proposer: Proposer<B, Error = Error>,
-	P: Pair,
-	P::Public: AppPublic + Member,
-	P::Signature: TryFrom<Vec<u8>> + Member + Codec,
+	P: Pair + sp_application_crypto::AppCrypto<Public = <P as Pair>::Public, Signature = <P as Pair>::Signature>,
+	<P as Pair>::Public: AppPublic + Member + std::fmt::Debug,
+	<P as Pair>::Signature: TryFrom<Vec<u8>> + Member + Codec,
 	I: BlockImport<B> + Send + Sync + 'static,
 	Error: std::error::Error + Send + From<ConsensusError> + 'static,
 	SO: SyncOracle + Send + Sync + Clone,
@@ -332,9 +332,9 @@ where
 	E: Environment<B, Error = Error> + Send + Sync,
 	E::Proposer: Proposer<B, Error = Error>,
 	I: BlockImport<B> + Send + Sync + 'static,
-	P: Pair,
-	P::Public: AppPublic + Member,
-	P::Signature: TryFrom<Vec<u8>> + Member + Codec,
+	P: Pair + sp_application_crypto::AppCrypto<Public = <P as Pair>::Public, Signature = <P as Pair>::Signature>,
+	<P as Pair>::Public: AppPublic + Member + std::fmt::Debug,
+	<P as Pair>::Signature: TryFrom<Vec<u8>> + Member + Codec,
 	SO: SyncOracle + Send + Clone + Sync,
 	L: sc_consensus::JustificationSyncLink<B>,
 	BS: BackoffAuthoringBlocksStrategy<NumberFor<B>> + Send + Sync + 'static,
@@ -346,7 +346,7 @@ where
 	type CreateProposer =
 		Pin<Box<dyn Future<Output = Result<E::Proposer, ConsensusError>> + Send + 'static>>;
 	type Proposer = E::Proposer;
-	type Claim = P::Public;
+	type Claim = <P as Pair>::Public;
 	type AuxData = Vec<AuthorityId<P>>;
 
 	fn logging_target(&self) -> &'static str {
@@ -411,7 +411,7 @@ where
 
 	fn should_backoff(&self, slot: Slot, chain_head: &B::Header) -> bool {
 		if let Some(ref strategy) = self.backoff_authoring_blocks {
-			if let Ok(chain_head_slot) = find_pre_digest::<B, P::Signature>(chain_head) {
+			if let Ok(chain_head_slot) = find_pre_digest::<B, <P as Pair>::Signature>(chain_head) {
 				return strategy.should_backoff(
 					*chain_head.number(),
 					chain_head_slot,
@@ -444,7 +444,7 @@ where
 	}
 
 	fn proposing_remaining_duration(&self, slot_info: &SlotInfo<B>) -> std::time::Duration {
-		let parent_slot = find_pre_digest::<B, P::Signature>(&slot_info.chain_head).ok();
+		let parent_slot = find_pre_digest::<B, <P as Pair>::Signature>(&slot_info.chain_head).ok();
 
 		sc_consensus_slots::proposing_remaining_duration(
 			parent_slot,

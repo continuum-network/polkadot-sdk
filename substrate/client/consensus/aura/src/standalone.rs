@@ -92,14 +92,23 @@ pub async fn claim_slot<P: Pair>(
 	slot: Slot,
 	authorities: &[AuthorityId<P>],
 	keystore: &KeystorePtr,
-) -> Option<P::Public> {
+) -> Option<<P as Pair>::Public>
+where
+	P: sp_application_crypto::AppCrypto<Public = <P as Pair>::Public>,
+	<P as Pair>::Public: std::fmt::Debug,
+{
 	let expected_author = slot_author::<P>(slot, authorities);
 	expected_author.and_then(|p| {
-		if keystore.has_keys(&[(p.to_raw_vec(), sp_application_crypto::key_types::AURA)]) {
-			Some(p.clone())
-		} else {
-			None
-		}
+	// Use the key type from the Pair type (supports both standard AURA and quantum QAUR)
+	let key_type = <P as sp_application_crypto::AppCrypto>::ID;
+	log::debug!("🔍 QUANTUM AURA: Checking for key type {:?} for author {:?}", key_type, p);
+	if keystore.has_keys(&[(p.to_raw_vec(), key_type)]) {
+		log::debug!("✅ QUANTUM AURA: Found key in keystore!");
+		Some(p.clone())
+	} else {
+		log::debug!("❌ QUANTUM AURA: Key not found in keystore");
+		None
+	}
 	})
 }
 

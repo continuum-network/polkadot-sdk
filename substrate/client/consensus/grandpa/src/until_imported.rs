@@ -24,7 +24,7 @@
 
 use super::{
 	BlockStatus as BlockStatusT, BlockSyncRequester as BlockSyncRequesterT, CommunicationIn, Error,
-	SignedMessage, LOG_TARGET,
+	LOG_TARGET,
 };
 
 use finality_grandpa::voter;
@@ -38,7 +38,7 @@ use parking_lot::Mutex;
 use prometheus_endpoint::{register, Gauge, PrometheusError, Registry, U64};
 use sc_client_api::{BlockImportNotification, ImportNotifications};
 use sc_utils::mpsc::TracingUnboundedReceiver;
-use sp_consensus_grandpa::AuthorityId;
+use sp_consensus_grandpa::{AuthorityId, AuthoritySignature, SignedMessageOf};
 use sp_runtime::traits::{Block as BlockT, Header as HeaderT, NumberFor};
 
 use std::{
@@ -354,7 +354,11 @@ fn warn_authority_wrong_target<H: ::std::fmt::Display>(hash: H, id: AuthorityId)
 	);
 }
 
-impl<Block: BlockT> BlockUntilImported<Block> for SignedMessage<Block::Header> {
+impl<Block: BlockT, Id, Sig> BlockUntilImported<Block> for SignedMessageOf<Block::Header, Sig, Id>
+where
+	Id: Clone + std::fmt::Debug,
+	Sig: Clone,
+{
 	type Blocked = Self;
 
 	fn needs_waiting<BlockStatus: BlockStatusT<Block>>(
@@ -365,7 +369,7 @@ impl<Block: BlockT> BlockUntilImported<Block> for SignedMessage<Block::Header> {
 
 		if let Some(number) = status_check.block_number(target_hash)? {
 			if number != target_number {
-				warn_authority_wrong_target(target_hash, msg.id);
+				warn_authority_wrong_target_generic(target_hash, &msg.id);
 				return Ok(DiscardWaitOrReady::Discard)
 			} else {
 				return Ok(DiscardWaitOrReady::Ready(msg))
@@ -378,7 +382,7 @@ impl<Block: BlockT> BlockUntilImported<Block> for SignedMessage<Block::Header> {
 	fn wait_completed(self, canon_number: NumberFor<Block>) -> Option<Self::Blocked> {
 		let (&target_hash, target_number) = self.target();
 		if canon_number != target_number {
-			warn_authority_wrong_target(target_hash, self.id);
+			warn_authority_wrong_target_generic(target_hash, &self.id);
 
 			None
 		} else {
@@ -387,14 +391,24 @@ impl<Block: BlockT> BlockUntilImported<Block> for SignedMessage<Block::Header> {
 	}
 }
 
+fn warn_authority_wrong_target_generic<H: std::fmt::Debug, Id: std::fmt::Debug>(target: H, id: &Id) {
+	warn!(
+		target: LOG_TARGET,
+		"Authority {:?} signed GRANDPA message with \
+		wrong block number for block {:?}",
+		id,
+		target,
+	);
+}
+
 /// Helper type definition for the stream which waits until vote targets for
 /// signed messages are imported.
-pub(crate) type UntilVoteTargetImported<Block, BlockStatus, BlockSyncRequester, I> = UntilImported<
+pub(crate) type UntilVoteTargetImported<Block, BlockStatus, BlockSyncRequester, I, Id = AuthorityId, Sig = AuthoritySignature> = UntilImported<
 	Block,
 	BlockStatus,
 	BlockSyncRequester,
 	I,
-	SignedMessage<<Block as BlockT>::Header>,
+	SignedMessageOf<<Block as BlockT>::Header, Sig, Id>,
 >;
 
 /// This blocks a global message import, i.e. a commit or catch up messages,
@@ -406,15 +420,19 @@ pub(crate) type UntilVoteTargetImported<Block, BlockStatus, BlockSyncRequester, 
 /// We use the `Arc`'s reference count to implicitly count the number of outstanding blocks that we
 /// are waiting on for the same message (i.e. other `BlockGlobalMessage` instances with the same
 /// `inner`).
-pub(crate) struct BlockGlobalMessage<Block: BlockT> {
-	inner: Arc<Mutex<Option<CommunicationIn<Block>>>>,
+pub(crate) struct BlockGlobalMessage<Block: BlockT, Id = AuthorityId, Sig = AuthoritySignature> {
+	inner: Arc<Mutex<Option<CommunicationIn<Block, Id, Sig>>>>,
 	target_number: NumberFor<Block>,
 }
 
-impl<Block: BlockT> Unpin for BlockGlobalMessage<Block> {}
+impl<Block: BlockT, Id, Sig> Unpin for BlockGlobalMessage<Block, Id, Sig> {}
 
-impl<Block: BlockT> BlockUntilImported<Block> for BlockGlobalMessage<Block> {
-	type Blocked = CommunicationIn<Block>;
+impl<Block: BlockT, Id, Sig> BlockUntilImported<Block> for BlockGlobalMessage<Block, Id, Sig>
+where
+	Id: Clone,
+	Sig: Clone,
+{
+	type Blocked = CommunicationIn<Block, Id, Sig>;
 
 	fn needs_waiting<BlockStatus: BlockStatusT<Block>>(
 		input: Self::Blocked,
@@ -555,8 +573,8 @@ impl<Block: BlockT> BlockUntilImported<Block> for BlockGlobalMessage<Block> {
 
 /// A stream which gates off incoming global messages, i.e. commit and catch up
 /// messages, until all referenced block hashes have been imported.
-pub(crate) type UntilGlobalMessageBlocksImported<Block, BlockStatus, BlockSyncRequester, I> =
-	UntilImported<Block, BlockStatus, BlockSyncRequester, I, BlockGlobalMessage<Block>>;
+pub(crate) type UntilGlobalMessageBlocksImported<Block, BlockStatus, BlockSyncRequester, I, Id = AuthorityId, Sig = AuthoritySignature> =
+	UntilImported<Block, BlockStatus, BlockSyncRequester, I, BlockGlobalMessage<Block, Id, Sig>>;
 
 #[cfg(test)]
 mod tests {

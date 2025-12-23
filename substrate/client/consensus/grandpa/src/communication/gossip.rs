@@ -96,11 +96,14 @@ use sc_network_gossip::{MessageIntent, ValidatorContext};
 use sc_network_types::PeerId;
 use sc_telemetry::{telemetry, TelemetryHandle, CONSENSUS_DEBUG};
 use sc_utils::mpsc::{tracing_unbounded, TracingUnboundedReceiver, TracingUnboundedSender};
-use sp_consensus_grandpa::AuthorityId;
+use sp_consensus_grandpa::{AuthorityId, AuthoritySignature, CatchUpOf, CompactCommitOf, SignedMessageOf};
 use sp_runtime::traits::{Block as BlockT, NumberFor, Zero};
 
 use super::{benefit, cost, Round, SetId, NEIGHBOR_REBROADCAST_PERIOD};
-use crate::{environment, CatchUp, CompactCommit, SignedMessage, LOG_TARGET};
+use crate::{authorities::AuthorityIdBounds, environment, LOG_TARGET};
+
+// Type alias for constructing catch-up messages
+type CatchUp<Header, Id> = CatchUpOf<Header, AuthoritySignature, Id>;
 
 use std::{
 	collections::{HashSet, VecDeque},
@@ -331,20 +334,20 @@ fn neighbor_topics<B: BlockT>(view: &View<NumberFor<B>>) -> Vec<B::Hash> {
 /// Grandpa gossip message type.
 /// This is the root type that gets encoded and sent on the network.
 #[derive(Debug, Encode, Decode)]
-pub(super) enum GossipMessage<Block: BlockT> {
+pub(super) enum GossipMessage<Block: BlockT, Id = AuthorityId, Sig = AuthoritySignature> {
 	/// Grandpa message with round and set info.
-	Vote(VoteMessage<Block>),
+	Vote(VoteMessage<Block, Id, Sig>),
 	/// Grandpa commit message with round and set info.
-	Commit(FullCommitMessage<Block>),
+	Commit(FullCommitMessage<Block, Id, Sig>),
 	/// A neighbor packet. Not repropagated.
 	Neighbor(VersionedNeighborPacket<NumberFor<Block>>),
 	/// Grandpa catch up request message with round and set info. Not repropagated.
 	CatchUpRequest(CatchUpRequestMessage),
 	/// Grandpa catch up message with round and set info. Not repropagated.
-	CatchUp(FullCatchUpMessage<Block>),
+	CatchUp(FullCatchUpMessage<Block, Id, Sig>),
 }
 
-impl<Block: BlockT> From<NeighborPacket<NumberFor<Block>>> for GossipMessage<Block> {
+impl<Block: BlockT, Id, Sig> From<NeighborPacket<NumberFor<Block>>> for GossipMessage<Block, Id, Sig> {
 	fn from(neighbor: NeighborPacket<NumberFor<Block>>) -> Self {
 		GossipMessage::Neighbor(VersionedNeighborPacket::V1(neighbor))
 	}
@@ -352,24 +355,24 @@ impl<Block: BlockT> From<NeighborPacket<NumberFor<Block>>> for GossipMessage<Blo
 
 /// Network level vote message with topic information.
 #[derive(Debug, Encode, Decode)]
-pub(super) struct VoteMessage<Block: BlockT> {
+pub(super) struct VoteMessage<Block: BlockT, Id = AuthorityId, Sig = AuthoritySignature> {
 	/// The round this message is from.
 	pub(super) round: Round,
 	/// The voter set ID this message is from.
 	pub(super) set_id: SetId,
 	/// The message itself.
-	pub(super) message: SignedMessage<Block::Header>,
+	pub(super) message: SignedMessageOf<Block::Header, Sig, Id>,
 }
 
 /// Network level commit message with topic information.
 #[derive(Debug, Encode, Decode)]
-pub(super) struct FullCommitMessage<Block: BlockT> {
+pub(super) struct FullCommitMessage<Block: BlockT, Id = AuthorityId, Sig = AuthoritySignature> {
 	/// The round this message is from.
 	pub(super) round: Round,
 	/// The voter set ID this message is from.
 	pub(super) set_id: SetId,
 	/// The compact commit message.
-	pub(super) message: CompactCommit<Block::Header>,
+	pub(super) message: CompactCommitOf<Block::Header, Sig, Id>,
 }
 
 /// V1 neighbor packet. Neighbor packets are sent from nodes to their peers
@@ -410,11 +413,11 @@ pub(super) struct CatchUpRequestMessage {
 
 /// Network level catch up message with topic information.
 #[derive(Debug, Encode, Decode)]
-pub(super) struct FullCatchUpMessage<Block: BlockT> {
+pub(super) struct FullCatchUpMessage<Block: BlockT, Id = AuthorityId, Sig = AuthoritySignature> {
 	/// The voter set ID this message is from.
 	pub(super) set_id: SetId,
 	/// The compact commit message.
-	pub(super) message: CatchUp<Block::Header>,
+	pub(super) message: CatchUpOf<Block::Header, Sig, Id>,
 }
 
 /// Misbehavior that peers can perform.
@@ -742,12 +745,13 @@ impl CatchUpConfig {
 	}
 }
 
-struct Inner<Block: BlockT> {
+struct Inner<Block: BlockT, Id = AuthorityId, Sig = AuthoritySignature> {
 	local_view: Option<LocalView<NumberFor<Block>>>,
 	peers: Peers<NumberFor<Block>>,
 	live_topics: KeepTopics<Block>,
-	authorities: Vec<AuthorityId>,
+	authorities: Vec<Id>,
 	config: crate::Config,
+	_sig_marker: std::marker::PhantomData<Sig>,
 	next_rebroadcast: Instant,
 	pending_catch_up: PendingCatchUp,
 	catch_up_config: CatchUpConfig,
@@ -755,7 +759,11 @@ struct Inner<Block: BlockT> {
 
 type MaybeMessage<Block> = Option<(Vec<PeerId>, NeighborPacket<NumberFor<Block>>)>;
 
-impl<Block: BlockT> Inner<Block> {
+impl<Block: BlockT, Id, Sig> Inner<Block, Id, Sig>
+where
+	Id: crate::authorities::AuthorityIdBounds,
+	Sig: sp_consensus_grandpa::AuthoritySignatureBounds,
+{
 	fn new(config: crate::Config) -> Self {
 		let catch_up_config = if config.observer_enabled {
 			if config.local_role.is_authority() {
@@ -783,6 +791,7 @@ impl<Block: BlockT> Inner<Block> {
 			pending_catch_up: PendingCatchUp::None,
 			catch_up_config,
 			config,
+			_sig_marker: std::marker::PhantomData,
 		}
 	}
 
@@ -815,7 +824,7 @@ impl<Block: BlockT> Inner<Block> {
 
 	/// Note that a voter set with given ID has started. Does nothing if the last
 	/// call to the function was with the same `set_id`.
-	fn note_set(&mut self, set_id: SetId, authorities: Vec<AuthorityId>) -> MaybeMessage<Block> {
+	fn note_set(&mut self, set_id: SetId, authorities: Vec<Id>) -> MaybeMessage<Block> {
 		let local_view = match self.local_view {
 			ref mut x @ None => x.get_or_insert(LocalView::new(set_id, Round(1))),
 			Some(ref mut v) => {
@@ -898,8 +907,9 @@ impl<Block: BlockT> Inner<Block> {
 	fn validate_round_message(
 		&self,
 		who: &PeerId,
-		full: &VoteMessage<Block>,
-	) -> Action<Block::Hash> {
+		full: &VoteMessage<Block, Id, Sig>,
+	) -> Action<Block::Hash>
+	{
 		match self.consider_vote(full.round, full.set_id) {
 			Consider::RejectFuture => return Action::Discard(Misbehavior::FutureMessage.cost()),
 			Consider::RejectOutOfScope =>
@@ -911,7 +921,7 @@ impl<Block: BlockT> Inner<Block> {
 
 		// ensure authority is part of the set.
 		if !self.authorities.contains(&full.message.id) {
-			debug!(target: LOG_TARGET, "Message from unknown voter: {}", full.message.id);
+			debug!(target: LOG_TARGET, "Message from unknown voter: {:?}", full.message.id);
 			telemetry!(
 				self.config.telemetry;
 				CONSENSUS_DEBUG;
@@ -921,14 +931,18 @@ impl<Block: BlockT> Inner<Block> {
 			return Action::Discard(cost::UNKNOWN_VOTER)
 		}
 
-		if !sp_consensus_grandpa::check_message_signature(
+		// Use hybrid verification that supports both Ed25519 and Dilithium3 signatures
+		let id_bytes = full.message.id.as_ref();
+		let sig_bytes = full.message.signature.as_ref();
+		let sig_valid = sp_consensus_grandpa::check_message_signature_hybrid(
 			&full.message.message,
-			&full.message.id,
-			&full.message.signature,
+			id_bytes,
+			sig_bytes,
 			full.round.0,
 			full.set_id.0,
-		) {
-			debug!(target: LOG_TARGET, "Bad message signature {}", full.message.id);
+		);
+		if !sig_valid {
+			debug!(target: LOG_TARGET, "Bad message signature: id_len={}, sig_len={}", id_bytes.len(), sig_bytes.len());
 			telemetry!(
 				self.config.telemetry;
 				CONSENSUS_DEBUG;
@@ -945,7 +959,7 @@ impl<Block: BlockT> Inner<Block> {
 	fn validate_commit_message(
 		&mut self,
 		who: &PeerId,
-		full: &FullCommitMessage<Block>,
+		full: &FullCommitMessage<Block, Id, Sig>,
 	) -> Action<Block::Hash> {
 		if let Err(misbehavior) = self.peers.update_commit_height(who, full.message.target_number) {
 			return Action::Discard(misbehavior.cost())
@@ -984,7 +998,7 @@ impl<Block: BlockT> Inner<Block> {
 	fn validate_catch_up_message(
 		&mut self,
 		who: &PeerId,
-		full: &FullCatchUpMessage<Block>,
+		full: &FullCatchUpMessage<Block, Id, Sig>,
 	) -> Action<Block::Hash> {
 		match &self.pending_catch_up {
 			PendingCatchUp::Requesting { who: peer, request, instant } => {
@@ -1033,8 +1047,12 @@ impl<Block: BlockT> Inner<Block> {
 		&mut self,
 		who: &PeerId,
 		request: CatchUpRequestMessage,
-		set_state: &environment::SharedVoterSetState<Block>,
-	) -> (Option<GossipMessage<Block>>, Action<Block::Hash>) {
+		set_state: &environment::SharedVoterSetState<Block, Id, Sig>,
+	) -> (Option<GossipMessage<Block, Id, Sig>>, Action<Block::Hash>)
+	where
+		Id: crate::authorities::AuthorityIdBounds + Clone,
+		Sig: Clone + codec::Decode,
+	{
 		let Some(local_view) = &self.local_view else {
 			return (None, Action::Discard(Misbehavior::OutOfScopeMessage.cost()))
 		};
@@ -1082,6 +1100,7 @@ impl<Block: BlockT> Inner<Block> {
 		// catch up reply since peers won't accept catch-up messages that have
 		// too many equivocations (we exceed the fault-tolerance bound).
 		for vote in last_completed_round.votes {
+			// Use full Dilithium Id on the wire - no conversion to Ed25519
 			match vote.message {
 				finality_grandpa::Message::Prevote(prevote) => {
 					prevotes.push(finality_grandpa::SignedPrevote {
@@ -1103,7 +1122,7 @@ impl<Block: BlockT> Inner<Block> {
 
 		let (base_hash, base_number) = last_completed_round.base;
 
-		let catch_up = CatchUp::<Block::Header> {
+		let catch_up: sp_consensus_grandpa::CatchUpOf<Block::Header, Sig, Id> = finality_grandpa::CatchUp {
 			round_number: last_completed_round.number,
 			prevotes,
 			precommits,
@@ -1111,7 +1130,7 @@ impl<Block: BlockT> Inner<Block> {
 			base_number,
 		};
 
-		let full_catch_up = GossipMessage::CatchUp::<Block>(FullCatchUpMessage {
+		let full_catch_up = GossipMessage::<Block, Id, Sig>::CatchUp(FullCatchUpMessage {
 			set_id: request.set_id,
 			message: catch_up,
 		});
@@ -1119,7 +1138,7 @@ impl<Block: BlockT> Inner<Block> {
 		(Some(full_catch_up), Action::Discard(cost::CATCH_UP_REPLY))
 	}
 
-	fn try_catch_up(&mut self, who: &PeerId) -> (Option<GossipMessage<Block>>, Option<Report>) {
+	fn try_catch_up(&mut self, who: &PeerId) -> (Option<GossipMessage<Block, Id, Sig>>, Option<Report>) {
 		let mut catch_up = None;
 		let mut report = None;
 
@@ -1146,7 +1165,7 @@ impl<Block: BlockT> Inner<Block> {
 						"Sending catch-up request for round {} to {}", round, who,
 					);
 
-					catch_up = Some(GossipMessage::<Block>::CatchUpRequest(request));
+					catch_up = Some(GossipMessage::<Block, Id, Sig>::CatchUpRequest(request));
 				}
 
 				report = catch_up_report;
@@ -1160,7 +1179,7 @@ impl<Block: BlockT> Inner<Block> {
 		&mut self,
 		who: &PeerId,
 		update: NeighborPacket<NumberFor<Block>>,
-	) -> (Vec<Block::Hash>, Action<Block::Hash>, Option<GossipMessage<Block>>, Option<Report>) {
+	) -> (Vec<Block::Hash>, Action<Block::Hash>, Option<GossipMessage<Block, Id, Sig>>, Option<Report>) {
 		let update_res = self.peers.update_peer_state(who, update);
 
 		let (cost_benefit, topics) = match update_res {
@@ -1310,24 +1329,32 @@ impl Metrics {
 }
 
 /// A validator for GRANDPA gossip messages.
-pub(super) struct GossipValidator<Block: BlockT> {
-	inner: parking_lot::RwLock<Inner<Block>>,
-	set_state: environment::SharedVoterSetState<Block>,
+pub(super) struct GossipValidator<Block: BlockT, Id = AuthorityId, Sig = AuthoritySignature>
+where
+	Id: crate::authorities::AuthorityIdBounds,
+	Sig: sp_consensus_grandpa::AuthoritySignatureBounds,
+{
+	inner: parking_lot::RwLock<Inner<Block, Id, Sig>>,
+	set_state: environment::SharedVoterSetState<Block, Id, Sig>,
 	report_sender: TracingUnboundedSender<PeerReport>,
 	metrics: Option<Metrics>,
 	telemetry: Option<TelemetryHandle>,
 }
 
-impl<Block: BlockT> GossipValidator<Block> {
+impl<Block: BlockT, Id, Sig> GossipValidator<Block, Id, Sig>
+where
+	Id: crate::authorities::AuthorityIdBounds,
+	Sig: sp_consensus_grandpa::AuthoritySignatureBounds,
+{
 	/// Create a new gossip-validator. The current set is initialized to 0. If
 	/// `catch_up_enabled` is set to false then the validator will not issue any
 	/// catch up requests (useful e.g. when running just the GRANDPA observer).
 	pub(super) fn new(
 		config: crate::Config,
-		set_state: environment::SharedVoterSetState<Block>,
+		set_state: environment::SharedVoterSetState<Block, Id, Sig>,
 		prometheus_registry: Option<&Registry>,
 		telemetry: Option<TelemetryHandle>,
-	) -> (GossipValidator<Block>, TracingUnboundedReceiver<PeerReport>) {
+	) -> (GossipValidator<Block, Id, Sig>, TracingUnboundedReceiver<PeerReport>) {
 		let metrics = match prometheus_registry.map(Metrics::register) {
 			Some(Ok(metrics)) => Some(metrics),
 			Some(Err(e)) => {
@@ -1338,7 +1365,7 @@ impl<Block: BlockT> GossipValidator<Block> {
 		};
 
 		let (tx, rx) = tracing_unbounded("mpsc_grandpa_gossip_validator", 100_000);
-		let val = GossipValidator {
+		let val = GossipValidator::<Block, Id, Sig> {
 			inner: parking_lot::RwLock::new(Inner::new(config)),
 			set_state,
 			report_sender: tx,
@@ -1362,7 +1389,7 @@ impl<Block: BlockT> GossipValidator<Block> {
 
 	/// Note that a voter set with given ID has started. Updates the current set to given
 	/// value and initializes the round to 0.
-	pub(super) fn note_set<F>(&self, set_id: SetId, authorities: Vec<AuthorityId>, send_neighbor: F)
+	pub(super) fn note_set<F>(&self, set_id: SetId, authorities: Vec<Id>, send_neighbor: F)
 	where
 		F: FnOnce(Vec<PeerId>, NeighborPacket<NumberFor<Block>>),
 	{
@@ -1404,15 +1431,19 @@ impl<Block: BlockT> GossipValidator<Block> {
 		&self,
 		who: &PeerId,
 		mut data: &[u8],
-	) -> (Action<Block::Hash>, Vec<Block::Hash>, Option<GossipMessage<Block>>) {
+	) -> (Action<Block::Hash>, Vec<Block::Hash>, Option<GossipMessage<Block, Id, Sig>>)
+	where
+		Id: codec::Decode,
+		Sig: codec::Decode,
+	{
 		let mut broadcast_topics = Vec::new();
-		let mut peer_reply = None;
+		let mut peer_reply: Option<GossipMessage<Block, Id, Sig>> = None;
 
 		// Message name for Prometheus metric recording.
 		let message_name;
 
 		let action = {
-			match GossipMessage::<Block>::decode_all(&mut data) {
+			match GossipMessage::<Block, Id, Sig>::decode_all(&mut data) {
 				Ok(GossipMessage::Vote(ref message)) => {
 					message_name = Some("vote");
 					self.inner.write().validate_round_message(who, message)
@@ -1478,12 +1509,16 @@ impl<Block: BlockT> GossipValidator<Block> {
 	}
 
 	#[cfg(test)]
-	fn inner(&self) -> &parking_lot::RwLock<Inner<Block>> {
+	fn inner(&self) -> &parking_lot::RwLock<Inner<Block, Id, Sig>> {
 		&self.inner
 	}
 }
 
-impl<Block: BlockT> sc_network_gossip::Validator<Block> for GossipValidator<Block> {
+impl<Block: BlockT, Id, Sig> sc_network_gossip::Validator<Block> for GossipValidator<Block, Id, Sig>
+where
+	Id: crate::authorities::AuthorityIdBounds + codec::Decode,
+	Sig: sp_consensus_grandpa::AuthoritySignatureBounds + codec::Decode,
+{
 	fn new_peer(
 		&self,
 		context: &mut dyn ValidatorContext<Block>,
@@ -1502,7 +1537,7 @@ impl<Block: BlockT> sc_network_gossip::Validator<Block> for GossipValidator<Bloc
 		};
 
 		if let Some(packet) = packet {
-			let packet_data = GossipMessage::<Block>::from(packet).encode();
+			let packet_data = GossipMessage::<Block, Id, Sig>::from(packet).encode();
 			context.send_message(who, packet_data);
 		}
 	}
@@ -1602,7 +1637,7 @@ impl<Block: BlockT> sc_network_gossip::Validator<Block> for GossipValidator<Bloc
 				return false // cannot evaluate until we have a local view.
 			};
 
-			match GossipMessage::<Block>::decode_all(&mut data) {
+			match GossipMessage::<Block, Id, Sig>::decode_all(&mut data) {
 				Err(_) => false,
 				Ok(GossipMessage::Commit(full)) => {
 					// we only broadcast commit messages if they're for the same
@@ -1638,7 +1673,7 @@ impl<Block: BlockT> sc_network_gossip::Validator<Block> for GossipValidator<Bloc
 			};
 
 			// global messages -- only keep the best commit.
-			match GossipMessage::<Block>::decode_all(&mut data) {
+			match GossipMessage::<Block, Id, Sig>::decode_all(&mut data) {
 				Err(_) => true,
 				Ok(GossipMessage::Commit(full)) => match local_view.last_commit {
 					Some((number, round, set_id)) =>

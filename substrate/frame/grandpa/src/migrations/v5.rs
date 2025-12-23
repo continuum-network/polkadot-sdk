@@ -15,7 +15,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{BoundedAuthorityList, Pallet};
+use crate::{BoundedAuthorityListOf, Pallet};
 use alloc::vec::Vec;
 use codec::Decode;
 use core::marker::PhantomData;
@@ -25,7 +25,7 @@ use frame_support::{
 	traits::{Get, UncheckedOnRuntimeUpgrade},
 	weights::Weight,
 };
-use sp_consensus_grandpa::AuthorityList;
+use sp_consensus_grandpa::{AuthorityId, AuthorityList};
 
 const GRANDPA_AUTHORITIES_KEY: &[u8] = b":grandpa_authorities";
 
@@ -37,9 +37,15 @@ fn load_authority_list() -> AuthorityList {
 }
 
 /// Actual implementation of [`MigrateV4ToV5`].
+/// Note: This migration only works for runtimes that use the standard Ed25519-based
+/// `AuthorityId`. For runtimes with custom authority types (e.g., Dilithium), the
+/// migration must be done differently.
 pub struct UncheckedMigrateImpl<T>(PhantomData<T>);
 
-impl<T: crate::Config> UncheckedOnRuntimeUpgrade for UncheckedMigrateImpl<T> {
+impl<T: crate::Config> UncheckedOnRuntimeUpgrade for UncheckedMigrateImpl<T>
+where
+	AuthorityId: Into<T::AuthorityId>,
+{
 	#[cfg(feature = "try-runtime")]
 	fn pre_upgrade() -> Result<Vec<u8>, sp_runtime::TryRuntimeError> {
 		use codec::Encode;
@@ -77,9 +83,16 @@ impl<T: crate::Config> UncheckedOnRuntimeUpgrade for UncheckedMigrateImpl<T> {
 	}
 
 	fn on_runtime_upgrade() -> Weight {
+		// Convert the legacy AuthorityList to the new generic type
+		let legacy_list = load_authority_list();
+		let converted_list: Vec<(T::AuthorityId, _)> = legacy_list
+			.into_iter()
+			.map(|(id, weight)| (id.into(), weight))
+			.collect();
+
 		crate::Authorities::<T>::put(
-			&BoundedAuthorityList::<T::MaxAuthorities>::force_from(
-				load_authority_list(),
+			&BoundedAuthorityListOf::<T>::force_from(
+				converted_list,
 				Some("Grandpa: `Config::MaxAuthorities` is smaller than the actual number of authorities.")
 			)
 		);
