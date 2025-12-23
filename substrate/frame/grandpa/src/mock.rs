@@ -19,7 +19,8 @@
 
 #![cfg(test)]
 
-use crate::{self as pallet_grandpa, AuthorityId, AuthorityList, Config, ConsensusLog};
+use crate::{self as pallet_grandpa, AuthorityId, AuthorityList, Config};
+use sp_consensus_grandpa::ConsensusLog;
 use codec::Encode;
 use finality_grandpa;
 use frame_election_provider_support::{
@@ -189,6 +190,8 @@ impl Config for Test {
 	type KeyOwnerProof = <Historical as KeyOwnerProofSystem<(KeyTypeId, AuthorityId)>>::Proof;
 	type EquivocationReportSystem =
 		super::EquivocationReportSystem<Self, Offences, Historical, ReportLongevity>;
+	type AuthorityId = AuthorityId;
+	type AuthoritySignature = sp_consensus_grandpa::AuthoritySignature;
 }
 
 pub fn grandpa_log(log: ConsensusLog<u64>) -> DigestItem {
@@ -300,7 +303,7 @@ pub fn generate_equivocation_proof(
 	set_id: SetId,
 	vote1: (RoundNumber, H256, u64, &Ed25519Keyring),
 	vote2: (RoundNumber, H256, u64, &Ed25519Keyring),
-) -> sp_consensus_grandpa::EquivocationProof<H256, u64> {
+) -> sp_consensus_grandpa::EquivocationProofOf<H256, u64, AuthorityId, sp_consensus_grandpa::AuthoritySignature> {
 	let signed_prevote = |round, hash, number, keyring: &Ed25519Keyring| {
 		let prevote = finality_grandpa::Prevote { target_hash: hash, target_number: number };
 
@@ -313,9 +316,9 @@ pub fn generate_equivocation_proof(
 	let (prevote1, signed1) = signed_prevote(vote1.0, vote1.1, vote1.2, vote1.3);
 	let (prevote2, signed2) = signed_prevote(vote2.0, vote2.1, vote2.2, vote2.3);
 
-	sp_consensus_grandpa::EquivocationProof::new(
+	sp_consensus_grandpa::EquivocationProofOf::new(
 		set_id,
-		sp_consensus_grandpa::Equivocation::Prevote(finality_grandpa::Equivocation {
+		sp_consensus_grandpa::EquivocationOf::Prevote(finality_grandpa::Equivocation {
 			round_number: vote1.0,
 			identity: vote1.3.public().into(),
 			first: (prevote1, signed1),

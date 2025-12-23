@@ -20,16 +20,20 @@
 
 use std::{cmp::Ord, fmt::Debug, ops::Add};
 
-use codec::{Decode, Encode};
+use codec::{Codec, Decode, Encode};
 use finality_grandpa::voter_set::VoterSet;
 use fork_tree::{FilterAction, ForkTree};
 use log::debug;
 use parking_lot::MappedMutexGuard;
 use sc_consensus::shared_data::{SharedData, SharedDataLocked};
 use sc_telemetry::{telemetry, TelemetryHandle, CONSENSUS_INFO};
-use sp_consensus_grandpa::{AuthorityId, AuthorityList};
+use sp_consensus_grandpa::{AuthorityId, AuthorityListOf};
 
 use crate::{SetId, LOG_TARGET};
+
+/// Trait bounds required for authority IDs in GRANDPA.
+pub trait AuthorityIdBounds: Clone + Codec + Debug + PartialEq + Eq + Ord + std::hash::Hash + AsRef<[u8]> + Send + Sync + 'static {}
+impl<T: Clone + Codec + Debug + PartialEq + Eq + Ord + std::hash::Hash + AsRef<[u8]> + Send + Sync + 'static> AuthorityIdBounds for T {}
 
 /// Error type returned on operations on the `AuthoritySet`.
 #[derive(Debug, thiserror::Error)]
@@ -68,34 +72,35 @@ impl<N, E: std::error::Error> From<E> for Error<N, E> {
 }
 
 /// A shared authority set.
-pub struct SharedAuthoritySet<H, N> {
-	inner: SharedData<AuthoritySet<H, N>>,
+pub struct SharedAuthoritySet<H, N, Id = AuthorityId> {
+	inner: SharedData<AuthoritySet<H, N, Id>>,
 }
 
-impl<H, N> Clone for SharedAuthoritySet<H, N> {
+impl<H, N, Id> Clone for SharedAuthoritySet<H, N, Id> {
 	fn clone(&self) -> Self {
 		SharedAuthoritySet { inner: self.inner.clone() }
 	}
 }
 
-impl<H, N> SharedAuthoritySet<H, N> {
+impl<H, N, Id> SharedAuthoritySet<H, N, Id> {
 	/// Returns access to the [`AuthoritySet`].
-	pub(crate) fn inner(&self) -> MappedMutexGuard<AuthoritySet<H, N>> {
+	pub(crate) fn inner(&self) -> MappedMutexGuard<AuthoritySet<H, N, Id>> {
 		self.inner.shared_data()
 	}
 
 	/// Returns access to the [`AuthoritySet`] and locks it.
 	///
 	/// For more information see [`SharedDataLocked`].
-	pub(crate) fn inner_locked(&self) -> SharedDataLocked<AuthoritySet<H, N>> {
+	pub(crate) fn inner_locked(&self) -> SharedDataLocked<'_, AuthoritySet<H, N, Id>> {
 		self.inner.shared_data_locked()
 	}
 }
 
-impl<H: Eq, N> SharedAuthoritySet<H, N>
+impl<H: Eq, N, Id> SharedAuthoritySet<H, N, Id>
 where
 	N: Add<Output = N> + Ord + Clone + Debug,
 	H: Clone + Debug,
+	Id: AuthorityIdBounds,
 {
 	/// Get the earliest limit-block number that's higher or equal to the given
 	/// min number, if any.
@@ -109,7 +114,7 @@ where
 	}
 
 	/// Get the current authorities and their weights (for the current set ID).
-	pub fn current_authorities(&self) -> VoterSet<AuthorityId> {
+	pub fn current_authorities(&self) -> VoterSet<Id> {
 		VoterSet::new(self.inner().current_authorities.iter().cloned()).expect(
 			"current_authorities is non-empty and weights are non-zero; \
 			 constructor and all mutating operations on `AuthoritySet` ensure this; \
@@ -118,7 +123,7 @@ where
 	}
 
 	/// Clone the inner `AuthoritySet`.
-	pub fn clone_inner(&self) -> AuthoritySet<H, N> {
+	pub fn clone_inner(&self) -> AuthoritySet<H, N, Id> {
 		self.inner().clone()
 	}
 
@@ -128,8 +133,8 @@ where
 	}
 }
 
-impl<H, N> From<AuthoritySet<H, N>> for SharedAuthoritySet<H, N> {
-	fn from(set: AuthoritySet<H, N>) -> Self {
+impl<H, N, Id> From<AuthoritySet<H, N, Id>> for SharedAuthoritySet<H, N, Id> {
+	fn from(set: AuthoritySet<H, N, Id>) -> Self {
 		SharedAuthoritySet { inner: SharedData::new(set) }
 	}
 }
@@ -146,15 +151,15 @@ pub(crate) struct Status<H, N> {
 
 /// A set of authorities.
 #[derive(Debug, Clone, Encode, Decode, PartialEq)]
-pub struct AuthoritySet<H, N> {
+pub struct AuthoritySet<H, N, Id = AuthorityId> {
 	/// The current active authorities.
-	pub(crate) current_authorities: AuthorityList,
+	pub(crate) current_authorities: AuthorityListOf<Id>,
 	/// The current set id.
 	pub(crate) set_id: u64,
 	/// Tree of pending standard changes across forks. Standard changes are
 	/// enacted on finality and must be enacted (i.e. finalized) in-order across
 	/// a given branch
-	pub(crate) pending_standard_changes: ForkTree<H, N, PendingChange<H, N>>,
+	pub(crate) pending_standard_changes: ForkTree<H, N, PendingChange<H, N, Id>>,
 	/// Pending forced changes across different forks (at most one per fork).
 	/// Forced changes are enacted on block depth (not finality), for this
 	/// reason only one forced change should exist per fork. When trying to
@@ -163,25 +168,26 @@ pub struct AuthoritySet<H, N> {
 	/// that is an ancestor of the forced changed and its effective block number
 	/// is lower than the last finalized block (as signaled in the forced
 	/// change) must be applied beforehand.
-	pending_forced_changes: Vec<PendingChange<H, N>>,
+	pending_forced_changes: Vec<PendingChange<H, N, Id>>,
 	/// Track at which blocks the set id changed. This is useful when we need to prove finality for
 	/// a given block since we can figure out what set the block belongs to and when the set
 	/// started/ended.
 	pub(crate) authority_set_changes: AuthoritySetChanges<N>,
 }
 
-impl<H, N> AuthoritySet<H, N>
+impl<H, N, Id> AuthoritySet<H, N, Id>
 where
 	H: PartialEq,
 	N: Ord + Clone,
+	Id: AuthorityIdBounds,
 {
 	// authority sets must be non-empty and all weights must be greater than 0
-	fn invalid_authority_list(authorities: &AuthorityList) -> bool {
+	fn invalid_authority_list(authorities: &AuthorityListOf<Id>) -> bool {
 		authorities.is_empty() || authorities.iter().any(|(_, w)| *w == 0)
 	}
 
 	/// Get a genesis set with given authorities.
-	pub(crate) fn genesis(initial: AuthorityList) -> Option<Self> {
+	pub(crate) fn genesis(initial: AuthorityListOf<Id>) -> Option<Self> {
 		if Self::invalid_authority_list(&initial) {
 			return None
 		}
@@ -197,10 +203,10 @@ where
 
 	/// Create a new authority set.
 	pub(crate) fn new(
-		authorities: AuthorityList,
+		authorities: AuthorityListOf<Id>,
 		set_id: u64,
-		pending_standard_changes: ForkTree<H, N, PendingChange<H, N>>,
-		pending_forced_changes: Vec<PendingChange<H, N>>,
+		pending_standard_changes: ForkTree<H, N, PendingChange<H, N, Id>>,
+		pending_forced_changes: Vec<PendingChange<H, N, Id>>,
 		authority_set_changes: AuthoritySetChanges<N>,
 	) -> Option<Self> {
 		if Self::invalid_authority_list(&authorities) {
@@ -217,7 +223,7 @@ where
 	}
 
 	/// Get the current set id and a reference to the current authority set.
-	pub(crate) fn current(&self) -> (u64, &[(AuthorityId, u64)]) {
+	pub(crate) fn current(&self) -> (u64, &[(Id, u64)]) {
 		(self.set_id, &self.current_authorities[..])
 	}
 
@@ -229,7 +235,7 @@ where
 	where
 		F: Fn(&H, &H) -> Result<bool, E>,
 	{
-		let filter = |node_hash: &H, node_num: &N, _: &PendingChange<H, N>| {
+		let filter = |node_hash: &H, node_num: &N, _: &PendingChange<H, N, Id>| {
 			if number >= *node_num &&
 				(is_descendent_of(node_hash, &hash).unwrap_or_default() || *node_hash == hash)
 			{
@@ -253,10 +259,11 @@ where
 	}
 }
 
-impl<H: Eq, N> AuthoritySet<H, N>
+impl<H: Eq, N, Id> AuthoritySet<H, N, Id>
 where
 	N: Add<Output = N> + Ord + Clone + Debug,
 	H: Clone + Debug,
+	Id: AuthorityIdBounds,
 {
 	/// Returns the block hash and height at which the next pending change in
 	/// the given chain (i.e. it includes `best_hash`) was signalled, `None` if
@@ -303,7 +310,7 @@ where
 
 	fn add_standard_change<F, E>(
 		&mut self,
-		pending: PendingChange<H, N>,
+		pending: PendingChange<H, N, Id>,
 		is_descendent_of: &F,
 	) -> Result<(), Error<N, E>>
 	where
@@ -335,7 +342,7 @@ where
 
 	fn add_forced_change<F, E>(
 		&mut self,
-		pending: PendingChange<H, N>,
+		pending: PendingChange<H, N, Id>,
 		is_descendent_of: &F,
 	) -> Result<(), Error<N, E>>
 	where
@@ -387,7 +394,7 @@ where
 	/// descendent of the first hash (base).
 	pub(crate) fn add_pending_change<F, E>(
 		&mut self,
-		pending: PendingChange<H, N>,
+		pending: PendingChange<H, N, Id>,
 		is_descendent_of: &F,
 	) -> Result<(), Error<N, E>>
 	where
@@ -407,7 +414,7 @@ where
 	/// Inspect pending changes. Standard pending changes are iterated first,
 	/// and the changes in the tree are traversed in pre-order, afterwards all
 	/// forced changes are iterated.
-	pub(crate) fn pending_changes(&self) -> impl Iterator<Item = &PendingChange<H, N>> {
+	pub(crate) fn pending_changes(&self) -> impl Iterator<Item = &PendingChange<H, N, Id>> {
 		self.pending_standard_changes
 			.iter()
 			.map(|(_, _, c)| c)
@@ -647,9 +654,9 @@ pub enum DelayKind<N> {
 /// This will be applied when the announcing block is at some depth within
 /// the finalized or unfinalized chain.
 #[derive(Debug, Clone, Encode, PartialEq)]
-pub struct PendingChange<H, N> {
+pub struct PendingChange<H, N, Id = AuthorityId> {
 	/// The new authorities and weights to apply.
-	pub(crate) next_authorities: AuthorityList,
+	pub(crate) next_authorities: AuthorityListOf<Id>,
 	/// How deep in the chain the announcing block must be
 	/// before the change is applied.
 	pub(crate) delay: N,
@@ -661,7 +668,7 @@ pub struct PendingChange<H, N> {
 	pub(crate) delay_kind: DelayKind<N>,
 }
 
-impl<H: Decode, N: Decode> Decode for PendingChange<H, N> {
+impl<H: Decode, N: Decode, Id: Decode> Decode for PendingChange<H, N, Id> {
 	fn decode<I: codec::Input>(value: &mut I) -> Result<Self, codec::Error> {
 		let next_authorities = Decode::decode(value)?;
 		let delay = Decode::decode(value)?;
@@ -674,7 +681,7 @@ impl<H: Decode, N: Decode> Decode for PendingChange<H, N> {
 	}
 }
 
-impl<H, N: Add<Output = N> + Clone> PendingChange<H, N> {
+impl<H, N: Add<Output = N> + Clone, Id> PendingChange<H, N, Id> {
 	/// Returns the effective number this change will be applied at.
 	pub fn effective_number(&self) -> N {
 		self.canon_height.clone() + self.delay.clone()

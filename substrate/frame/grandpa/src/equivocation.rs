@@ -40,7 +40,8 @@ use codec::{self as codec, Decode, Encode};
 use frame_support::traits::{Get, KeyOwnerProofSystem};
 use frame_system::pallet_prelude::BlockNumberFor;
 use log::{error, info};
-use sp_consensus_grandpa::{AuthorityId, EquivocationProof, RoundNumber, SetId, KEY_TYPE};
+use sp_consensus_grandpa::{EquivocationProofOf, RoundNumber, SetId};
+use sp_runtime::RuntimeAppPublic;
 use sp_runtime::{
 	transaction_validity::{
 		InvalidTransaction, TransactionPriority, TransactionSource, TransactionValidity,
@@ -119,7 +120,7 @@ pub struct EquivocationReportSystem<T, R, P, L>(core::marker::PhantomData<(T, R,
 impl<T, R, P, L>
 	OffenceReportSystem<
 		Option<T::AccountId>,
-		(EquivocationProof<T::Hash, BlockNumberFor<T>>, T::KeyOwnerProof),
+		(EquivocationProofOf<T::Hash, BlockNumberFor<T>, T::AuthorityId, T::AuthoritySignature>, T::KeyOwnerProof),
 	> for EquivocationReportSystem<T, R, P, L>
 where
 	T: Config + pallet_authorship::Config + frame_system::offchain::SendTransactionTypes<Call<T>>,
@@ -128,14 +129,14 @@ where
 		P::IdentificationTuple,
 		EquivocationOffence<P::IdentificationTuple>,
 	>,
-	P: KeyOwnerProofSystem<(KeyTypeId, AuthorityId), Proof = T::KeyOwnerProof>,
+	P: KeyOwnerProofSystem<(KeyTypeId, T::AuthorityId), Proof = T::KeyOwnerProof>,
 	P::IdentificationTuple: Clone,
 	L: Get<u64>,
 {
 	type Longevity = L;
 
 	fn publish_evidence(
-		evidence: (EquivocationProof<T::Hash, BlockNumberFor<T>>, T::KeyOwnerProof),
+		evidence: (EquivocationProofOf<T::Hash, BlockNumberFor<T>, T::AuthorityId, T::AuthoritySignature>, T::KeyOwnerProof),
 	) -> Result<(), ()> {
 		use frame_system::offchain::SubmitTransaction;
 		let (equivocation_proof, key_owner_proof) = evidence;
@@ -153,12 +154,12 @@ where
 	}
 
 	fn check_evidence(
-		evidence: (EquivocationProof<T::Hash, BlockNumberFor<T>>, T::KeyOwnerProof),
+		evidence: (EquivocationProofOf<T::Hash, BlockNumberFor<T>, T::AuthorityId, T::AuthoritySignature>, T::KeyOwnerProof),
 	) -> Result<(), TransactionValidityError> {
 		let (equivocation_proof, key_owner_proof) = evidence;
 
 		// Check the membership proof to extract the offender's id
-		let key = (KEY_TYPE, equivocation_proof.offender().clone());
+		let key = (T::AuthorityId::ID, equivocation_proof.offender().clone());
 		let offender = P::check_proof(key, key_owner_proof).ok_or(InvalidTransaction::BadProof)?;
 
 		// Check if the offence has already been reported, and if so then we can discard the report.
@@ -173,7 +174,7 @@ where
 
 	fn process_evidence(
 		reporter: Option<T::AccountId>,
-		evidence: (EquivocationProof<T::Hash, BlockNumberFor<T>>, T::KeyOwnerProof),
+		evidence: (EquivocationProofOf<T::Hash, BlockNumberFor<T>, T::AuthorityId, T::AuthoritySignature>, T::KeyOwnerProof),
 	) -> Result<(), DispatchError> {
 		let (equivocation_proof, key_owner_proof) = evidence;
 		let reporter = reporter.or_else(|| <pallet_authorship::Pallet<T>>::author());
@@ -189,12 +190,12 @@ where
 		let validator_set_count = key_owner_proof.validator_count();
 
 		// Validate equivocation proof (check votes are different and signatures are valid).
-		if !sp_consensus_grandpa::check_equivocation_proof(equivocation_proof) {
+		if !sp_consensus_grandpa::check_equivocation_proof_generic(&equivocation_proof) {
 			return Err(Error::<T>::InvalidEquivocationProof.into())
 		}
 
 		// Validate the key ownership proof extracting the id of the offender.
-		let offender = P::check_proof((KEY_TYPE, offender), key_owner_proof)
+		let offender = P::check_proof((T::AuthorityId::ID, offender), key_owner_proof)
 			.ok_or(Error::<T>::InvalidKeyOwnershipProof)?;
 
 		// Fetch the current and previous sets last session index.

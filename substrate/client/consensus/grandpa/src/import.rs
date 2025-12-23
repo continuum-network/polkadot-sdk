@@ -31,7 +31,7 @@ use sc_utils::mpsc::TracingUnboundedSender;
 use sp_api::{Core, RuntimeApiInfo};
 use sp_blockchain::BlockStatus;
 use sp_consensus::{BlockOrigin, Error as ConsensusError, SelectChain};
-use sp_consensus_grandpa::{ConsensusLog, GrandpaApi, ScheduledChange, SetId, GRANDPA_ENGINE_ID};
+use sp_consensus_grandpa::{AuthorityId, AuthorityListOf, AuthoritySignature, ConsensusLog, GrandpaApi, ScheduledChange, SetId, GRANDPA_ENGINE_ID};
 use sp_runtime::{
 	generic::OpaqueDigestItemId,
 	traits::{Block as BlockT, Header as HeaderT, NumberFor, Zero},
@@ -56,20 +56,27 @@ use crate::{
 ///
 /// When using GRANDPA, the block import worker should be using this block import
 /// object.
-pub struct GrandpaBlockImport<Backend, Block: BlockT, Client, SC> {
+pub struct GrandpaBlockImport<Backend, Block: BlockT, Client, SC, Id = AuthorityId, Sig = AuthoritySignature> 
+where
+	Id: crate::authorities::AuthorityIdBounds,
+	Sig: sp_consensus_grandpa::AuthoritySignatureBounds,
+{
 	inner: Arc<Client>,
 	justification_import_period: u32,
 	select_chain: SC,
-	authority_set: SharedAuthoritySet<Block::Hash, NumberFor<Block>>,
-	send_voter_commands: TracingUnboundedSender<VoterCommand<Block::Hash, NumberFor<Block>>>,
-	authority_set_hard_forks: HashMap<Block::Hash, PendingChange<Block::Hash, NumberFor<Block>>>,
-	justification_sender: GrandpaJustificationSender<Block>,
+	authority_set: SharedAuthoritySet<Block::Hash, NumberFor<Block>, Id>,
+	send_voter_commands: TracingUnboundedSender<VoterCommand<Block::Hash, NumberFor<Block>, Id>>,
+	authority_set_hard_forks: HashMap<Block::Hash, PendingChange<Block::Hash, NumberFor<Block>, Id>>,
+	justification_sender: GrandpaJustificationSender<Block, Id, Sig>,
 	telemetry: Option<TelemetryHandle>,
-	_phantom: PhantomData<Backend>,
+	_phantom: PhantomData<(Backend, Sig)>,
 }
 
-impl<Backend, Block: BlockT, Client, SC: Clone> Clone
-	for GrandpaBlockImport<Backend, Block, Client, SC>
+impl<Backend, Block: BlockT, Client, SC: Clone, Id, Sig> Clone
+	for GrandpaBlockImport<Backend, Block, Client, SC, Id, Sig>
+where
+	Id: crate::authorities::AuthorityIdBounds,
+	Sig: sp_consensus_grandpa::AuthoritySignatureBounds + Clone,
 {
 	fn clone(&self) -> Self {
 		GrandpaBlockImport {
@@ -87,13 +94,15 @@ impl<Backend, Block: BlockT, Client, SC: Clone> Clone
 }
 
 #[async_trait::async_trait]
-impl<BE, Block: BlockT, Client, SC> JustificationImport<Block>
-	for GrandpaBlockImport<BE, Block, Client, SC>
+impl<BE, Block: BlockT, Client, SC, Id, Sig> JustificationImport<Block>
+	for GrandpaBlockImport<BE, Block, Client, SC, Id, Sig>
 where
 	NumberFor<Block>: finality_grandpa::BlockNumberOps,
 	BE: Backend<Block>,
 	Client: ClientForGrandpa<Block, BE>,
 	SC: SelectChain<Block>,
+	Id: crate::authorities::AuthorityIdBounds,
+	Sig: sp_consensus_grandpa::AuthoritySignatureBounds + Clone + Send + Sync,
 {
 	type Error = ConsensusError;
 
@@ -150,13 +159,13 @@ where
 	}
 }
 
-enum AppliedChanges<H, N> {
+enum AppliedChanges<H, N, Id = AuthorityId> {
 	Standard(bool), // true if the change is ready to be applied (i.e. it's a root)
-	Forced(NewAuthoritySet<H, N>),
+	Forced(NewAuthoritySet<H, N, Id>),
 	None,
 }
 
-impl<H, N> AppliedChanges<H, N> {
+impl<H, N, Id> AppliedChanges<H, N, Id> {
 	fn needs_justification(&self) -> bool {
 		match *self {
 			AppliedChanges::Standard(_) => true,
@@ -165,27 +174,27 @@ impl<H, N> AppliedChanges<H, N> {
 	}
 }
 
-struct PendingSetChanges<Block: BlockT> {
+struct PendingSetChanges<Block: BlockT, Id = AuthorityId> {
 	just_in_case: Option<(
-		AuthoritySet<Block::Hash, NumberFor<Block>>,
-		SharedDataLockedUpgradable<AuthoritySet<Block::Hash, NumberFor<Block>>>,
+		AuthoritySet<Block::Hash, NumberFor<Block>, Id>,
+		SharedDataLockedUpgradable<AuthoritySet<Block::Hash, NumberFor<Block>, Id>>,
 	)>,
-	applied_changes: AppliedChanges<Block::Hash, NumberFor<Block>>,
+	applied_changes: AppliedChanges<Block::Hash, NumberFor<Block>, Id>,
 	do_pause: bool,
 }
 
-impl<Block: BlockT> PendingSetChanges<Block> {
+impl<Block: BlockT, Id> PendingSetChanges<Block, Id> {
 	// revert the pending set change explicitly.
 	fn revert(self) {}
 
-	fn defuse(mut self) -> (AppliedChanges<Block::Hash, NumberFor<Block>>, bool) {
+	fn defuse(mut self) -> (AppliedChanges<Block::Hash, NumberFor<Block>, Id>, bool) {
 		self.just_in_case = None;
 		let applied_changes = std::mem::replace(&mut self.applied_changes, AppliedChanges::None);
 		(applied_changes, self.do_pause)
 	}
 }
 
-impl<Block: BlockT> Drop for PendingSetChanges<Block> {
+impl<Block: BlockT, Id> Drop for PendingSetChanges<Block, Id> {
 	fn drop(&mut self) {
 		if let Some((old_set, mut authorities)) = self.just_in_case.take() {
 			*authorities.upgrade() = old_set;
@@ -210,6 +219,21 @@ pub fn find_scheduled_change<B: BlockT>(
 	header.digest().convert_first(|l| l.try_to(id).and_then(filter_log))
 }
 
+/// Checks the given header for a consensus digest signalling a **standard** scheduled change
+/// with a custom authority ID type.
+pub fn find_scheduled_change_generic<B: BlockT, Id: codec::Codec>(
+	header: &B::Header,
+) -> Option<sp_consensus_grandpa::ScheduledChangeOf<NumberFor<B>, Id>> {
+	let id = OpaqueDigestItemId::Consensus(&GRANDPA_ENGINE_ID);
+
+	let filter_log = |log: sp_consensus_grandpa::ConsensusLogOf<NumberFor<B>, Id>| match log {
+		sp_consensus_grandpa::ConsensusLogOf::ScheduledChange(change) => Some(change),
+		_ => None,
+	};
+
+	header.digest().convert_first(|l| l.try_to(id).and_then(filter_log))
+}
+
 /// Checks the given header for a consensus digest signalling a **forced** scheduled change and
 /// extracts it.
 pub fn find_forced_change<B: BlockT>(
@@ -227,27 +251,44 @@ pub fn find_forced_change<B: BlockT>(
 	header.digest().convert_first(|l| l.try_to(id).and_then(filter_log))
 }
 
-impl<BE, Block: BlockT, Client, SC> GrandpaBlockImport<BE, Block, Client, SC>
+/// Checks the given header for a consensus digest signalling a **forced** scheduled change
+/// with a custom authority ID type.
+pub fn find_forced_change_generic<B: BlockT, Id: codec::Codec>(
+	header: &B::Header,
+) -> Option<(NumberFor<B>, sp_consensus_grandpa::ScheduledChangeOf<NumberFor<B>, Id>)> {
+	let id = OpaqueDigestItemId::Consensus(&GRANDPA_ENGINE_ID);
+
+	let filter_log = |log: sp_consensus_grandpa::ConsensusLogOf<NumberFor<B>, Id>| match log {
+		sp_consensus_grandpa::ConsensusLogOf::ForcedChange(delay, change) => Some((delay, change)),
+		_ => None,
+	};
+
+	header.digest().convert_first(|l| l.try_to(id).and_then(filter_log))
+}
+
+impl<BE, Block: BlockT, Client, SC, Id, Sig> GrandpaBlockImport<BE, Block, Client, SC, Id, Sig>
 where
 	NumberFor<Block>: finality_grandpa::BlockNumberOps,
 	BE: Backend<Block>,
 	Client: ClientForGrandpa<Block, BE>,
 	Client::Api: GrandpaApi<Block>,
 	for<'a> &'a Client: BlockImport<Block, Error = ConsensusError>,
+	Id: crate::authorities::AuthorityIdBounds,
+	Sig: sp_consensus_grandpa::AuthoritySignatureBounds + Clone,
 {
 	// check for a new authority set change.
 	fn check_new_change(
 		&self,
 		header: &Block::Header,
 		hash: Block::Hash,
-	) -> Option<PendingChange<Block::Hash, NumberFor<Block>>> {
+	) -> Option<PendingChange<Block::Hash, NumberFor<Block>, Id>> {
 		// check for forced authority set hard forks
 		if let Some(change) = self.authority_set_hard_forks.get(&hash) {
 			return Some(change.clone())
 		}
 
-		// check for forced change.
-		if let Some((median_last_finalized, change)) = find_forced_change::<Block>(header) {
+		// check for forced change using the generic version.
+		if let Some((median_last_finalized, change)) = find_forced_change_generic::<Block, Id>(header) {
 			return Some(PendingChange {
 				next_authorities: change.next_authorities,
 				delay: change.delay,
@@ -257,8 +298,8 @@ where
 			})
 		}
 
-		// check normal scheduled change.
-		let change = find_scheduled_change::<Block>(header)?;
+		// check normal scheduled change using the generic version.
+		let change = find_scheduled_change_generic::<Block, Id>(header)?;
 		Some(PendingChange {
 			next_authorities: change.next_authorities,
 			delay: change.delay,
@@ -273,21 +314,21 @@ where
 		block: &mut BlockImportParams<Block>,
 		hash: Block::Hash,
 		initial_sync: bool,
-	) -> Result<PendingSetChanges<Block>, ConsensusError> {
+	) -> Result<PendingSetChanges<Block, Id>, ConsensusError> {
 		// when we update the authorities, we need to hold the lock
 		// until the block is written to prevent a race if we need to restore
 		// the old authority set on error or panic.
-		struct InnerGuard<'a, H, N> {
-			old: Option<AuthoritySet<H, N>>,
-			guard: Option<SharedDataLocked<'a, AuthoritySet<H, N>>>,
+		struct InnerGuard<'a, H, N, I: Clone> {
+			old: Option<AuthoritySet<H, N, I>>,
+			guard: Option<SharedDataLocked<'a, AuthoritySet<H, N, I>>>,
 		}
 
-		impl<'a, H, N> InnerGuard<'a, H, N> {
-			fn as_mut(&mut self) -> &mut AuthoritySet<H, N> {
+		impl<'a, H, N, I: Clone> InnerGuard<'a, H, N, I> {
+			fn as_mut(&mut self) -> &mut AuthoritySet<H, N, I> {
 				self.guard.as_mut().expect("only taken on deconstruction; qed")
 			}
 
-			fn set_old(&mut self, old: AuthoritySet<H, N>) {
+			fn set_old(&mut self, old: AuthoritySet<H, N, I>) {
 				if self.old.is_none() {
 					// ignore "newer" old changes.
 					self.old = Some(old);
@@ -296,14 +337,14 @@ where
 
 			fn consume(
 				mut self,
-			) -> Option<(AuthoritySet<H, N>, SharedDataLocked<'a, AuthoritySet<H, N>>)> {
+			) -> Option<(AuthoritySet<H, N, I>, SharedDataLocked<'a, AuthoritySet<H, N, I>>)> {
 				self.old
 					.take()
 					.map(|old| (old, self.guard.take().expect("only taken on deconstruction; qed")))
 			}
 		}
 
-		impl<'a, H, N> Drop for InnerGuard<'a, H, N> {
+		impl<'a, H, N, I: Clone> Drop for InnerGuard<'a, H, N, I> {
 			fn drop(&mut self) {
 				if let (Some(mut guard), Some(old)) = (self.guard.take(), self.old.take()) {
 					*guard = old;
@@ -370,7 +411,7 @@ where
 								 current best finalized number must exist in chain; qed."
 							);
 
-					NewAuthoritySet {
+					NewAuthoritySet::<_, _, Id> {
 						canon_number,
 						canon_hash,
 						set_id,
@@ -405,8 +446,8 @@ where
 				AppliedChanges::None => None,
 			};
 
-			crate::aux_schema::update_authority_set::<Block, _, _>(
-				authorities,
+			crate::aux_schema::update_authority_set::<Block, _, _, Id>(
+				&**authorities,
 				authorities_change,
 				|insert| {
 					block
@@ -475,14 +516,29 @@ where
 				// finality proofs and that the state is correct and final.
 				// So we can read the authority list and set id from the state.
 				self.authority_set_hard_forks.clear();
-				let authorities = self
+				
+				// Use grandpa_authorities_raw() which returns Vec<(Vec<u8>, u64)>
+				// This allows us to decode the authority ID as the generic type Id
+				let raw_authorities: Vec<(Vec<u8>, u64)> = self
 					.inner
 					.runtime_api()
-					.grandpa_authorities(hash)
+					.grandpa_authorities_raw(hash)
 					.map_err(|e| ConsensusError::ClientImport(e.to_string()))?;
+				
 				let set_id = self.current_set_id(hash)?;
+				
+				// Decode each authority ID from raw bytes
+				let generic_authorities_for_set: AuthorityListOf<Id> = raw_authorities.iter().map(|(id_bytes, weight)| {
+					let decoded = Id::decode(&mut &id_bytes[..])
+						.expect("Authority ID decode should match types");
+					(decoded, *weight)
+				}).collect();
+				
+				// Clone for use in voter command notification
+				let authorities_for_voter = generic_authorities_for_set.clone();
+				
 				let authority_set = AuthoritySet::new(
-					authorities.clone(),
+					generic_authorities_for_set,
 					set_id,
 					fork_tree::ForkTree::new(),
 					Vec::new(),
@@ -491,14 +547,20 @@ where
 				.ok_or_else(|| ConsensusError::ClientImport("Invalid authority list".into()))?;
 				*self.authority_set.inner_locked() = authority_set.clone();
 
-				crate::aux_schema::update_authority_set::<Block, _, _>(
+				crate::aux_schema::update_authority_set::<Block, _, _, Id>(
 					&authority_set,
 					None,
 					|insert| self.inner.insert_aux(insert, []),
 				)
 				.map_err(|e| ConsensusError::ClientImport(e.to_string()))?;
-				let new_set =
-					NewAuthoritySet { canon_number: number, canon_hash: hash, set_id, authorities };
+				
+				// Notify the voter of the new authority set
+				let new_set = NewAuthoritySet::<_, _, Id> { 
+					canon_number: number, 
+					canon_hash: hash, 
+					set_id, 
+					authorities: authorities_for_voter,
+				};
 				let _ = self
 					.send_voter_commands
 					.unbounded_send(VoterCommand::ChangeAuthorities(new_set));
@@ -511,7 +573,7 @@ where
 }
 
 #[async_trait::async_trait]
-impl<BE, Block: BlockT, Client, SC> BlockImport<Block> for GrandpaBlockImport<BE, Block, Client, SC>
+impl<BE, Block: BlockT, Client, SC, Id, Sig> BlockImport<Block> for GrandpaBlockImport<BE, Block, Client, SC, Id, Sig>
 where
 	NumberFor<Block>: finality_grandpa::BlockNumberOps,
 	BE: Backend<Block>,
@@ -519,6 +581,8 @@ where
 	Client::Api: GrandpaApi<Block>,
 	for<'a> &'a Client: BlockImport<Block, Error = ConsensusError>,
 	SC: Send + Sync,
+	Id: crate::authorities::AuthorityIdBounds,
+	Sig: sp_consensus_grandpa::AuthoritySignatureBounds + Clone + Send + Sync,
 {
 	type Error = ConsensusError;
 
@@ -557,7 +621,7 @@ where
 				}
 				let mut authority_set = self.authority_set.inner_locked();
 				authority_set.authority_set_changes.insert(number);
-				crate::aux_schema::update_authority_set::<Block, _, _>(
+				crate::aux_schema::update_authority_set::<Block, _, _, Id>(
 					&authority_set,
 					None,
 					|insert| {
@@ -704,17 +768,21 @@ where
 	}
 }
 
-impl<Backend, Block: BlockT, Client, SC> GrandpaBlockImport<Backend, Block, Client, SC> {
+impl<Backend, Block: BlockT, Client, SC, Id, Sig> GrandpaBlockImport<Backend, Block, Client, SC, Id, Sig> 
+where
+	Id: crate::authorities::AuthorityIdBounds,
+	Sig: sp_consensus_grandpa::AuthoritySignatureBounds,
+{
 	pub(crate) fn new(
 		inner: Arc<Client>,
 		justification_import_period: u32,
 		select_chain: SC,
-		authority_set: SharedAuthoritySet<Block::Hash, NumberFor<Block>>,
-		send_voter_commands: TracingUnboundedSender<VoterCommand<Block::Hash, NumberFor<Block>>>,
-		authority_set_hard_forks: Vec<(SetId, PendingChange<Block::Hash, NumberFor<Block>>)>,
-		justification_sender: GrandpaJustificationSender<Block>,
+		authority_set: SharedAuthoritySet<Block::Hash, NumberFor<Block>, Id>,
+		send_voter_commands: TracingUnboundedSender<VoterCommand<Block::Hash, NumberFor<Block>, Id>>,
+		authority_set_hard_forks: Vec<(SetId, PendingChange<Block::Hash, NumberFor<Block>, Id>)>,
+		justification_sender: GrandpaJustificationSender<Block, Id, Sig>,
 		telemetry: Option<TelemetryHandle>,
-	) -> GrandpaBlockImport<Backend, Block, Client, SC> {
+	) -> GrandpaBlockImport<Backend, Block, Client, SC, Id, Sig> {
 		// check for and apply any forced authority set hard fork that applies
 		// to the *current* authority set.
 		if let Some((_, change)) = authority_set_hard_forks
@@ -758,11 +826,13 @@ impl<Backend, Block: BlockT, Client, SC> GrandpaBlockImport<Backend, Block, Clie
 	}
 }
 
-impl<BE, Block: BlockT, Client, SC> GrandpaBlockImport<BE, Block, Client, SC>
+impl<BE, Block: BlockT, Client, SC, Id, Sig> GrandpaBlockImport<BE, Block, Client, SC, Id, Sig>
 where
 	BE: Backend<Block>,
 	Client: ClientForGrandpa<Block, BE>,
 	NumberFor<Block>: finality_grandpa::BlockNumberOps,
+	Id: crate::authorities::AuthorityIdBounds,
+	Sig: sp_consensus_grandpa::AuthoritySignatureBounds + Clone,
 {
 	/// Import a block justification and finalize the block.
 	///
