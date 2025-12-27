@@ -330,14 +330,14 @@ pub async fn claim_slot<B, C, P>(
 	slot_duration: SlotDuration,
 	relay_chain_slot_duration: Duration,
 	keystore: &KeystorePtr,
-) -> Result<Option<SlotClaim<P::Public>>, Box<dyn Error>>
+) -> Result<Option<SlotClaim<<P as Pair>::Public>>, Box<dyn Error>>
 where
 	B: BlockT,
 	C: ProvideRuntimeApi<B> + Send + Sync + 'static,
-	C::Api: AuraApi<B, P::Public>,
-	P: Pair,
-	P::Public: Codec,
-	P::Signature: Codec,
+	C::Api: AuraApi<B, <P as Pair>::Public>,
+	P: Pair + sp_application_crypto::AppCrypto<Public = <P as Pair>::Public, Signature = <P as Pair>::Signature>,
+	<P as Pair>::Public: Codec + std::fmt::Debug,
+	<P as Pair>::Signature: Codec,
 {
 	// load authorities
 	let authorities = client.runtime_api().authorities(parent_hash).map_err(Box::new)?;

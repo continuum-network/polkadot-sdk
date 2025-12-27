@@ -17,6 +17,10 @@
 //! Contains functionality related to PVFs that is shared by the PVF host and the PVF workers.
 #![deny(unused_crate_dependencies)]
 
+// Crate used only in certain test configurations
+#[cfg(test)]
+use tempfile as _;
+
 pub mod error;
 pub mod execute;
 pub mod executor_interface;

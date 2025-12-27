@@ -132,7 +132,7 @@ where
 	where
 		Client:
 			ProvideRuntimeApi<B> + BlockOf + AuxStore + HeaderBackend<B> + Send + Sync + 'static,
-		Client::Api: AuraApi<B, P::Public>,
+		Client::Api: AuraApi<B, <P as Pair>::Public>,
 		BI: BlockImport<B> + ParachainBlockImportMarker + Send + Sync + 'static,
 		SO: SyncOracle + Send + Sync + Clone + 'static,
 		BS: BackoffAuthoringBlocksStrategy<NumberFor<B>> + Send + Sync + 'static,
@@ -144,9 +144,9 @@ where
 			Proof = <EnableProofRecording as ProofRecording>::Proof,
 		>,
 		Error: std::error::Error + Send + From<sp_consensus::Error> + 'static,
-		P: Pair + 'static,
-		P::Public: AppPublic + Member + Codec,
-		P::Signature: TryFrom<Vec<u8>> + Member + Codec,
+		P: Pair + sp_application_crypto::AppCrypto<Public = <P as Pair>::Public, Signature = <P as Pair>::Signature> + 'static,
+		<P as Pair>::Public: AppPublic + Member + Codec,
+		<P as Pair>::Signature: TryFrom<Vec<u8>> + Member + Codec,
 	{
 		let worker = sc_consensus_aura::build_aura_worker::<P, _, _, _, _, _, _, _, _>(
 			BuildAuraWorkerParams {

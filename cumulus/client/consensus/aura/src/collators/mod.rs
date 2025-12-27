@@ -182,13 +182,13 @@ async fn can_build_upon<Block: BlockT, Client, P>(
 	included_block: Block::Hash,
 	client: &Client,
 	keystore: &KeystorePtr,
-) -> Option<SlotClaim<P::Public>>
+) -> Option<SlotClaim<<P as Pair>::Public>>
 where
 	Client: ProvideRuntimeApi<Block>,
-	Client::Api: AuraApi<Block, P::Public> + AuraUnincludedSegmentApi<Block>,
-	P: Pair,
-	P::Public: Codec,
-	P::Signature: Codec,
+	Client::Api: AuraApi<Block, <P as Pair>::Public> + AuraUnincludedSegmentApi<Block>,
+	P: Pair + sp_application_crypto::AppCrypto<Public = <P as Pair>::Public, Signature = <P as Pair>::Signature>,
+	<P as Pair>::Public: Codec + std::fmt::Debug,
+	<P as Pair>::Signature: Codec,
 {
 	let runtime_api = client.runtime_api();
 	let authorities = runtime_api.authorities(parent_hash).ok()?;
