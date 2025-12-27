@@ -21,7 +21,7 @@
 
 use super::{Call, Event, *};
 use crate::mock::*;
-use fg_primitives::ScheduledChange;
+use fg_primitives::{ConsensusLog, ScheduledChange};
 use frame_support::{
 	assert_err, assert_noop, assert_ok,
 	dispatch::{GetDispatchInfo, Pays},
