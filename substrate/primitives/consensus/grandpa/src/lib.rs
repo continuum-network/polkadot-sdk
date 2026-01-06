@@ -786,14 +786,14 @@ where
 
 	// Check signature size to determine algorithm
 	if signature_bytes.len() == DILITHIUM3_SIGNATURE_SIZE && id_bytes.len() == DILITHIUM3_PUBLIC_KEY_SIZE {
-		// Dilithium3 verification
-		use pqcrypto_dilithium::dilithium3;
+		// ML-DSA-65 (Dilithium3) verification using pqcrypto-mldsa
+		use pqcrypto_mldsa::mldsa65;
 		use pqcrypto_traits::sign::PublicKey as PqPublicKey;
 		use pqcrypto_traits::sign::DetachedSignature;
 		
-		if let Ok(pk) = dilithium3::PublicKey::from_bytes(id_bytes) {
-			if let Ok(sig) = dilithium3::DetachedSignature::from_bytes(signature_bytes) {
-				return pqcrypto_dilithium::dilithium3::verify_detached_signature(&sig, &buf, &pk).is_ok();
+		if let Ok(pk) = mldsa65::PublicKey::from_bytes(id_bytes) {
+			if let Ok(sig) = mldsa65::DetachedSignature::from_bytes(signature_bytes) {
+				return pqcrypto_mldsa::mldsa65::verify_detached_signature(&sig, &buf, &pk).is_ok();
 			}
 		}
 		false
@@ -835,14 +835,14 @@ where
 
 	// Check signature size to determine algorithm
 	if signature_bytes.len() == DILITHIUM3_SIGNATURE_SIZE && id_bytes.len() == DILITHIUM3_PUBLIC_KEY_SIZE {
-		// Dilithium3 verification
-		use pqcrypto_dilithium::dilithium3;
+		// ML-DSA-65 (Dilithium3) verification using pqcrypto-mldsa
+		use pqcrypto_mldsa::mldsa65;
 		use pqcrypto_traits::sign::PublicKey as PqPublicKey;
 		use pqcrypto_traits::sign::DetachedSignature;
 		
-		if let Ok(pk) = dilithium3::PublicKey::from_bytes(id_bytes) {
-			if let Ok(sig) = dilithium3::DetachedSignature::from_bytes(signature_bytes) {
-				return pqcrypto_dilithium::dilithium3::verify_detached_signature(&sig, buf, &pk).is_ok();
+		if let Ok(pk) = mldsa65::PublicKey::from_bytes(id_bytes) {
+			if let Ok(sig) = mldsa65::DetachedSignature::from_bytes(signature_bytes) {
+				return pqcrypto_mldsa::mldsa65::verify_detached_signature(&sig, buf, &pk).is_ok();
 			}
 		}
 		false

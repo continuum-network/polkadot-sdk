@@ -29,7 +29,7 @@ sp-keystore = { optional = true, workspace = true }
 sp-runtime.workspace = true
 
 # Quantum-resistant cryptography (optional, std only)
-pqcrypto-dilithium = { version = "0.5", optional = true }
+pqcrypto-mldsa = { version = "0.1", optional = true }
 pqcrypto-traits = { version = "0.3", optional = true }
 
 [features]
@@ -45,7 +45,7 @@ std = [
 	"sp-core/std",
 	"sp-keystore/std",
 	"sp-runtime/std",
-	"pqcrypto-dilithium",
+	"pqcrypto-mldsa",
 	"pqcrypto-traits",
 ]
 
