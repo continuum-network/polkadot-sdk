@@ -651,6 +651,38 @@ impl<T: Keystore + ?Sized> Keystore for Arc<T> {
 	fn has_keys(&self, public_keys: &[(Vec<u8>, KeyTypeId)]) -> bool {
 		(**self).has_keys(public_keys)
 	}
+
+	// CONTINUUM PATCH (qchain docs/REMEDIATION_ROADMAP.md Phase 9.11): `sign_with` is the
+	// one `Keystore` method with a *default* trait-provided body (see the trait
+	// definition above). Every other method in this impl block is a *required* method
+	// with no default, so Rust forces an explicit `(**self).foo(...)` override here to
+	// get real dynamic dispatch down to the concrete type behind the `dyn Keystore`
+	// vtable. `sign_with` has no such forced override -- omitting it here (as upstream
+	// does) means calls to `arc.sign_with(...)` silently resolve to the trait's *default*
+	// body specialized on `Self = Arc<T>`, which only recognizes a small fixed set of
+	// standard `CryptoTypeId`s (sr25519/ed25519/ecdsa/...) and returns
+	// `Err(KeyNotSupported)` for anything else -- INCLUDING crypto schemes a concrete
+	// `T` genuinely implements via its own `sign_with` override. This makes any such
+	// override permanently unreachable through `KeystorePtr = Arc<dyn Keystore>`, which
+	// is exactly the type `sc_consensus_aura::standalone::seal()` calls `.sign_with()`
+	// on for every block-sealing signature in production. Adding this explicit forward
+	// -- mirroring the exact pattern already used for every other method in this impl
+	// block -- restores real dynamic dispatch: `(**self).sign_with(...)` derefs through
+	// to `dyn Keystore` and its vtable entry for `sign_with` correctly points at the
+	// concrete type's own override if one exists, or at the (correctly specialized)
+	// trait default otherwise. This is a pure passthrough with no behavior change for
+	// any type that does not override `sign_with` (it still ends up running the exact
+	// same default body, just resolved on the concrete type instead of on `Arc<T>`), so
+	// it is backward-compatible for every existing caller.
+	fn sign_with(
+		&self,
+		id: KeyTypeId,
+		crypto_id: CryptoTypeId,
+		public: &[u8],
+		msg: &[u8],
+	) -> Result<Option<Vec<u8>>, Error> {
+		(**self).sign_with(id, crypto_id, public, msg)
+	}
 }
 
 /// A shared pointer to a keystore implementation.
