@@ -765,6 +765,9 @@ where
 }
 
 /// Parameters to pass into `build_network`.
+///
+/// `Id` is the GRANDPA authority id type used by the optional warp-sync provider. Defaults to
+/// classical ed25519 [`sc_network_sync::WarpSyncAuthorityId`]. Continuum supplies Dilithium.
 pub struct BuildNetworkParams<
 	'a,
 	TBl: BlockT,
@@ -772,7 +775,10 @@ pub struct BuildNetworkParams<
 	TExPool,
 	TImpQu,
 	TCl,
-> {
+	Id = sc_network_sync::WarpSyncAuthorityId,
+> where
+	Id: Clone + Send + Sync + 'static,
+{
 	/// The service configuration.
 	pub config: &'a Configuration,
 	/// Full network configuration.
@@ -789,7 +795,7 @@ pub struct BuildNetworkParams<
 	pub block_announce_validator_builder:
 		Option<Box<dyn FnOnce(Arc<TCl>) -> Box<dyn BlockAnnounceValidator<TBl> + Send> + Send>>,
 	/// Optional warp sync config.
-	pub warp_sync_config: Option<WarpSyncConfig<TBl>>,
+	pub warp_sync_config: Option<WarpSyncConfig<TBl, Id>>,
 	/// User specified block relay params. If not specified, the default
 	/// block request handler will be used.
 	pub block_relay: Option<BlockRelayParams<TBl, TNet>>,
@@ -798,8 +804,8 @@ pub struct BuildNetworkParams<
 }
 
 /// Build the network service, the network status sinks and an RPC sender.
-pub fn build_network<TBl, TNet, TExPool, TImpQu, TCl>(
-	params: BuildNetworkParams<TBl, TNet, TExPool, TImpQu, TCl>,
+pub fn build_network<TBl, TNet, TExPool, TImpQu, TCl, Id>(
+	params: BuildNetworkParams<TBl, TNet, TExPool, TImpQu, TCl, Id>,
 ) -> Result<
 	(
 		Arc<dyn sc_network::service::traits::NetworkService>,
@@ -824,6 +830,7 @@ where
 	TExPool: TransactionPool<Block = TBl, Hash = <TBl as BlockT>::Hash> + 'static,
 	TImpQu: ImportQueue<TBl> + 'static,
 	TNet: NetworkBackend<TBl, <TBl as BlockT>::Hash>,
+	Id: Clone + Send + Sync + 'static,
 {
 	let BuildNetworkParams {
 		config,

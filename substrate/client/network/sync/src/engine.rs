@@ -42,6 +42,7 @@ use crate::{
 };
 
 use codec::{Decode, DecodeAll, Encode};
+use sp_consensus_grandpa::AuthorityId;
 use futures::{channel::oneshot, FutureExt, StreamExt};
 use libp2p::request_response::OutboundFailure;
 use log::{debug, error, trace, warn};
@@ -187,9 +188,12 @@ pub struct Peer<B: BlockT> {
 	inbound: bool,
 }
 
-pub struct SyncingEngine<B: BlockT, Client> {
+pub struct SyncingEngine<B: BlockT, Client, Id = AuthorityId>
+where
+	Id: Clone + Send + Sync + 'static,
+{
 	/// Syncing strategy.
-	strategy: SyncingStrategy<B, Client>,
+	strategy: SyncingStrategy<B, Client, Id>,
 
 	/// Blockchain client.
 	client: Arc<Client>,
@@ -281,7 +285,7 @@ pub struct SyncingEngine<B: BlockT, Client> {
 	import_queue: Box<dyn ImportQueueService<B>>,
 }
 
-impl<B: BlockT, Client> SyncingEngine<B, Client>
+impl<B: BlockT, Client, Id> SyncingEngine<B, Client, Id>
 where
 	B: BlockT,
 	Client: HeaderBackend<B>
@@ -291,6 +295,7 @@ where
 		+ Send
 		+ Sync
 		+ 'static,
+	Id: Clone + Send + Sync + 'static,
 {
 	pub fn new<N>(
 		roles: Roles,
@@ -301,7 +306,7 @@ where
 		protocol_id: ProtocolId,
 		fork_id: &Option<String>,
 		block_announce_validator: Box<dyn BlockAnnounceValidator<B> + Send>,
-		warp_sync_config: Option<WarpSyncConfig<B>>,
+		warp_sync_config: Option<WarpSyncConfig<B, Id>>,
 		network_service: service::network::NetworkServiceHandle,
 		import_queue: Box<dyn ImportQueueService<B>>,
 		block_downloader: Arc<dyn BlockDownloader<B>>,

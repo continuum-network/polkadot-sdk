@@ -450,15 +450,18 @@ where
 }
 
 /// Fetch the justification for the latest block finalized by GRANDPA, if any.
-pub fn best_justification<B, Block, Id>(
+///
+/// Pass `Sig = AuthoritySignature` for classical ed25519 GRANDPA; Continuum passes Dilithium.
+pub fn best_justification<B, Block, Id, Sig>(
 	backend: &B,
-) -> ClientResult<Option<GrandpaJustification<Block, Id>>>
+) -> ClientResult<Option<GrandpaJustification<Block, Id, Sig>>>
 where
 	B: AuxStore,
 	Block: BlockT,
 	Id: Clone + codec::Decode,
+	Sig: Clone + codec::Decode,
 {
-	load_decode::<_, GrandpaJustification<Block, Id>>(backend, BEST_JUSTIFICATION)
+	load_decode::<_, GrandpaJustification<Block, Id, Sig>>(backend, BEST_JUSTIFICATION)
 }
 
 /// Write voter set state.

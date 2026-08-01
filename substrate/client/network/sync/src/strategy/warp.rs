@@ -18,7 +18,7 @@
 
 //! Warp syncing strategy. Bootstraps chain by downloading warp proofs and state.
 
-pub use sp_consensus_grandpa::{AuthorityList, SetId};
+pub use sp_consensus_grandpa::{AuthorityId, AuthorityList, AuthorityListOf, SetId};
 
 use crate::{
 	strategy::{chain_sync::validate_blocks, disconnected_peers::DisconnectedPeers},
@@ -52,15 +52,25 @@ pub struct WarpProofRequest<B: BlockT> {
 }
 
 /// Proof verification result.
-pub enum VerificationResult<Block: BlockT> {
+///
+/// `Id` defaults to the classical ed25519 [`AuthorityId`] so existing monorepo consumers remain
+/// source-compatible. Continuum (and any chain with non-ed25519 GRANDPA authorities) supplies its
+/// concrete authority id type explicitly.
+pub enum VerificationResult<Block: BlockT, Id = AuthorityId> {
 	/// Proof is valid, but the target was not reached.
-	Partial(SetId, AuthorityList, Block::Hash),
+	Partial(SetId, AuthorityListOf<Id>, Block::Hash),
 	/// Target finality is proved.
-	Complete(SetId, AuthorityList, Block::Header),
+	Complete(SetId, AuthorityListOf<Id>, Block::Header),
 }
 
 /// Warp sync backend. Handles retrieving and verifying warp sync proofs.
-pub trait WarpSyncProvider<Block: BlockT>: Send + Sync {
+///
+/// `Id` is the GRANDPA authority public-key type used for authority-set tracking while warp sync
+/// is in progress. Defaults to ed25519 [`AuthorityId`]. Continuum plugs Dilithium/ML-DSA-65.
+pub trait WarpSyncProvider<Block: BlockT, Id = AuthorityId>: Send + Sync
+where
+	Id: Send + Sync + 'static,
+{
 	/// Generate proof starting at given block hash. The proof is accumulated until maximum proof
 	/// size is reached.
 	fn generate(
@@ -72,11 +82,11 @@ pub trait WarpSyncProvider<Block: BlockT>: Send + Sync {
 		&self,
 		proof: &EncodedProof,
 		set_id: SetId,
-		authorities: AuthorityList,
-	) -> Result<VerificationResult<Block>, Box<dyn std::error::Error + Send + Sync>>;
+		authorities: AuthorityListOf<Id>,
+	) -> Result<VerificationResult<Block, Id>, Box<dyn std::error::Error + Send + Sync>>;
 	/// Get current list of authorities. This is supposed to be genesis authorities when starting
 	/// sync.
-	fn current_authorities(&self) -> AuthorityList;
+	fn current_authorities(&self) -> AuthorityListOf<Id>;
 }
 
 mod rep {
@@ -142,9 +152,14 @@ pub struct WarpSyncProgress<Block: BlockT> {
 }
 
 /// Warp sync configuration as accepted by [`WarpSync`].
-pub enum WarpSyncConfig<Block: BlockT> {
+///
+/// `Id` defaults to ed25519 [`AuthorityId`]. Continuum supplies Dilithium authority ids.
+pub enum WarpSyncConfig<Block: BlockT, Id = AuthorityId>
+where
+	Id: Send + Sync + 'static,
+{
 	/// Standard warp sync for the chain.
-	WithProvider(Arc<dyn WarpSyncProvider<Block>>),
+	WithProvider(Arc<dyn WarpSyncProvider<Block, Id>>),
 	/// Skip downloading proofs and use provided header of the state that should be downloaded.
 	///
 	/// It is expected that the header provider ensures that the header is trusted.
@@ -152,15 +167,18 @@ pub enum WarpSyncConfig<Block: BlockT> {
 }
 
 /// Warp sync phase used by warp sync state machine.
-enum Phase<B: BlockT> {
+enum Phase<B: BlockT, Id = AuthorityId>
+where
+	Id: Send + Sync + 'static,
+{
 	/// Waiting for enough peers to connect.
-	WaitingForPeers { warp_sync_provider: Arc<dyn WarpSyncProvider<B>> },
+	WaitingForPeers { warp_sync_provider: Arc<dyn WarpSyncProvider<B, Id>> },
 	/// Downloading warp proofs.
 	WarpProof {
 		set_id: SetId,
-		authorities: AuthorityList,
+		authorities: AuthorityListOf<Id>,
 		last_hash: B::Hash,
-		warp_sync_provider: Arc<dyn WarpSyncProvider<B>>,
+		warp_sync_provider: Arc<dyn WarpSyncProvider<B, Id>>,
 	},
 	/// Downloading target block.
 	TargetBlock(B::Header),
@@ -204,8 +222,11 @@ pub struct WarpSyncResult<B: BlockT> {
 }
 
 /// Warp sync state machine. Accumulates warp proofs and state.
-pub struct WarpSync<B: BlockT, Client> {
-	phase: Phase<B>,
+pub struct WarpSync<B: BlockT, Client, Id = AuthorityId>
+where
+	Id: Send + Sync + 'static,
+{
+	phase: Phase<B, Id>,
 	client: Arc<Client>,
 	total_proof_bytes: u64,
 	total_state_bytes: u64,
@@ -215,15 +236,16 @@ pub struct WarpSync<B: BlockT, Client> {
 	result: Option<WarpSyncResult<B>>,
 }
 
-impl<B, Client> WarpSync<B, Client>
+impl<B, Client, Id> WarpSync<B, Client, Id>
 where
 	B: BlockT,
 	Client: HeaderBackend<B> + 'static,
+	Id: Clone + Send + Sync + 'static,
 {
 	/// Create a new instance. When passing a warp sync provider we will be checking for proof and
 	/// authorities. Alternatively we can pass a target block when we want to skip downloading
 	/// proofs, in this case we will continue polling until the target block is known.
-	pub fn new(client: Arc<Client>, warp_sync_config: WarpSyncConfig<B>) -> Self {
+	pub fn new(client: Arc<Client>, warp_sync_config: WarpSyncConfig<B, Id>) -> Self {
 		if client.info().finalized_state.is_some() {
 			error!(
 				target: LOG_TARGET,

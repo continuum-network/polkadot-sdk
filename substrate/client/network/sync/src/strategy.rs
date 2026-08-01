@@ -47,6 +47,7 @@ use sp_runtime::{
 };
 use state::{StateStrategy, StateStrategyAction};
 use std::{collections::HashMap, sync::Arc};
+use sp_consensus_grandpa::AuthorityId;
 use warp::{EncodedProof, WarpProofRequest, WarpSync, WarpSyncAction, WarpSyncConfig};
 
 /// Corresponding `ChainSync` mode.
@@ -159,13 +160,16 @@ impl<B: BlockT> From<ChainSyncAction<B>> for SyncingAction<B> {
 }
 
 /// Proxy to specific syncing strategies.
-pub struct SyncingStrategy<B: BlockT, Client> {
+pub struct SyncingStrategy<B: BlockT, Client, Id = AuthorityId>
+where
+	Id: Clone + Send + Sync + 'static,
+{
 	/// Initial syncing configuration.
 	config: SyncingConfig,
 	/// Client used by syncing strategies.
 	client: Arc<Client>,
 	/// Warp strategy.
-	warp: Option<WarpSync<B, Client>>,
+	warp: Option<WarpSync<B, Client, Id>>,
 	/// State strategy.
 	state: Option<StateStrategy<B>>,
 	/// `ChainSync` strategy.`
@@ -175,7 +179,7 @@ pub struct SyncingStrategy<B: BlockT, Client> {
 	peer_best_blocks: HashMap<PeerId, (B::Hash, NumberFor<B>)>,
 }
 
-impl<B: BlockT, Client> SyncingStrategy<B, Client>
+impl<B: BlockT, Client, Id> SyncingStrategy<B, Client, Id>
 where
 	B: BlockT,
 	Client: HeaderBackend<B>
@@ -185,12 +189,13 @@ where
 		+ Send
 		+ Sync
 		+ 'static,
+	Id: Clone + Send + Sync + 'static,
 {
 	/// Initialize a new syncing strategy.
 	pub fn new(
 		config: SyncingConfig,
 		client: Arc<Client>,
-		warp_sync_config: Option<WarpSyncConfig<B>>,
+		warp_sync_config: Option<WarpSyncConfig<B, Id>>,
 	) -> Result<Self, ClientError> {
 		if let SyncMode::Warp = config.mode {
 			let warp_sync_config = warp_sync_config

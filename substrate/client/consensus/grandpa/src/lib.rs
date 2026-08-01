@@ -132,7 +132,7 @@ pub use aux_schema::best_justification;
 pub use communication::grandpa_protocol_name::standard_name as protocol_standard_name;
 pub use finality_grandpa::voter::report;
 pub use finality_proof::{FinalityProof, FinalityProofError, FinalityProofProvider};
-pub use import::{find_forced_change, find_scheduled_change, GrandpaBlockImport};
+pub use import::{find_forced_change, find_forced_change_generic, find_scheduled_change, find_scheduled_change_generic, GrandpaBlockImport};
 pub use justification::GrandpaJustification;
 pub use notification::{GrandpaJustificationSender, GrandpaJustificationStream};
 pub use observer::run_grandpa_observer;

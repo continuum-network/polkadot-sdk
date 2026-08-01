@@ -29,6 +29,7 @@ use sc_network::{
 	request_responses::{IncomingRequest, OutgoingResponse},
 	NetworkBackend, MAX_RESPONSE_SIZE,
 };
+use sp_consensus_grandpa::AuthorityId;
 use sp_runtime::traits::Block as BlockT;
 
 use std::{sync::Arc, time::Duration};
@@ -74,18 +75,24 @@ fn generate_legacy_protocol_name(protocol_id: ProtocolId) -> String {
 }
 
 /// Handler for incoming grandpa warp sync requests from a remote peer.
-pub struct RequestHandler<TBlock: BlockT> {
-	backend: Arc<dyn WarpSyncProvider<TBlock>>,
+pub struct RequestHandler<TBlock: BlockT, Id = AuthorityId>
+where
+	Id: Send + Sync + 'static,
+{
+	backend: Arc<dyn WarpSyncProvider<TBlock, Id>>,
 	request_receiver: async_channel::Receiver<IncomingRequest>,
 }
 
-impl<TBlock: BlockT> RequestHandler<TBlock> {
+impl<TBlock: BlockT, Id> RequestHandler<TBlock, Id>
+where
+	Id: Send + Sync + 'static,
+{
 	/// Create a new [`RequestHandler`].
 	pub fn new<Hash: AsRef<[u8]>, N: NetworkBackend<TBlock, <TBlock as BlockT>::Hash>>(
 		protocol_id: ProtocolId,
 		genesis_hash: Hash,
 		fork_id: Option<&str>,
-		backend: Arc<dyn WarpSyncProvider<TBlock>>,
+		backend: Arc<dyn WarpSyncProvider<TBlock, Id>>,
 	) -> (Self, N::RequestResponseProtocolConfig) {
 		let (tx, request_receiver) = async_channel::bounded(MAX_WARP_REQUEST_QUEUE);
 

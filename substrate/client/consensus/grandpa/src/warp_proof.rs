@@ -19,14 +19,16 @@
 use codec::{Decode, DecodeAll, Encode};
 
 use crate::{
-	best_justification, find_scheduled_change, AuthoritySetChanges, AuthoritySetHardFork,
+	best_justification, find_scheduled_change_generic, AuthoritySetChanges, AuthoritySetHardFork,
 	BlockNumberOps, GrandpaJustification, SharedAuthoritySet,
 };
 use sc_client_api::Backend as ClientBackend;
 use sc_network_sync::strategy::warp::{EncodedProof, VerificationResult, WarpSyncProvider};
 use sp_blockchain::{Backend as BlockchainBackend, HeaderBackend};
-use sp_consensus_grandpa::{AuthorityList, SetId, GRANDPA_ENGINE_ID};
-use sp_core;
+use sp_consensus_grandpa::{
+	AuthorityId, AuthorityListOf, AuthoritySignature, AuthoritySignatureBounds, SetId,
+	GRANDPA_ENGINE_ID,
+};
 use sp_runtime::{
 	generic::BlockId,
 	traits::{Block as BlockT, Header as HeaderT, NumberFor, One},
@@ -58,24 +60,30 @@ pub enum Error {
 pub(super) const MAX_WARP_SYNC_PROOF_SIZE: usize = 8 * 1024 * 1024;
 
 /// A proof of an authority set change.
+///
+/// `Id`/`Sig` default to classical ed25519 GRANDPA types. Continuum supplies Dilithium/ML-DSA-65.
 #[derive(Decode, Encode, Debug)]
-pub struct WarpSyncFragment<Block: BlockT> {
+pub struct WarpSyncFragment<Block: BlockT, Id = AuthorityId, Sig = AuthoritySignature> {
 	/// The last block that the given authority set finalized. This block should contain a digest
 	/// signaling an authority set change from which we can fetch the next authority set.
 	pub header: Block::Header,
 	/// A justification for the header above which proves its finality. In order to validate it the
 	/// verifier must be aware of the authorities and set id for which the justification refers to.
-	pub justification: GrandpaJustification<Block>,
+	pub justification: GrandpaJustification<Block, Id, Sig>,
 }
 
 /// An accumulated proof of multiple authority set changes.
 #[derive(Decode, Encode)]
-pub struct WarpSyncProof<Block: BlockT> {
-	proofs: Vec<WarpSyncFragment<Block>>,
+pub struct WarpSyncProof<Block: BlockT, Id = AuthorityId, Sig = AuthoritySignature> {
+	proofs: Vec<WarpSyncFragment<Block, Id, Sig>>,
 	is_finished: bool,
 }
 
-impl<Block: BlockT> WarpSyncProof<Block> {
+impl<Block: BlockT, Id, Sig> WarpSyncProof<Block, Id, Sig>
+where
+	Id: crate::authorities::AuthorityIdBounds + Decode,
+	Sig: AuthoritySignatureBounds + Decode,
+{
 	/// Generates a warp sync proof starting at the given block. It will generate authority set
 	/// change proofs for all changes that happened from `begin` until the current authority set
 	/// (capped by MAX_WARP_SYNC_PROOF_SIZE).
@@ -83,7 +91,7 @@ impl<Block: BlockT> WarpSyncProof<Block> {
 		backend: &Backend,
 		begin: Block::Hash,
 		set_changes: &AuthoritySetChanges<NumberFor<Block>>,
-	) -> Result<WarpSyncProof<Block>, Error>
+	) -> Result<WarpSyncProof<Block, Id, Sig>, Error>
 	where
 		Backend: ClientBackend<Block>,
 	{
@@ -126,7 +134,7 @@ impl<Block: BlockT> WarpSyncProof<Block> {
 
 			// the last block in a set is the one that triggers a change to the next set,
 			// therefore the block must have a digest that signals the authority set change
-			if find_scheduled_change::<Block>(&header).is_none() {
+			if find_scheduled_change_generic::<Block, Id>(&header).is_none() {
 				// if it doesn't contain a signal for standard change then the set must have changed
 				// through a forced changed, in which case we stop collecting proofs as the chain of
 				// trust in authority handoffs was broken.
@@ -138,7 +146,7 @@ impl<Block: BlockT> WarpSyncProof<Block> {
 				.and_then(|just| just.into_justification(GRANDPA_ENGINE_ID))
 				.ok_or_else(|| Error::MissingData)?;
 
-			let justification = GrandpaJustification::<Block>::decode_all(&mut &justification[..])?;
+			let justification = GrandpaJustification::<Block, Id, Sig>::decode_all(&mut &justification[..])?;
 
 			let proof = WarpSyncFragment { header: header.clone(), justification };
 			let proof_size = proof.encoded_size();
@@ -158,7 +166,7 @@ impl<Block: BlockT> WarpSyncProof<Block> {
 		let is_finished = if proof_limit_reached {
 			false
 		} else {
-			let latest_justification = best_justification(backend)?.filter(|justification| {
+			let latest_justification = best_justification::<_, Block, Id, Sig>(backend)?.filter(|justification| {
 				// the existing best justification must be for a block higher than the
 				// last authority set change. if we didn't prove any authority set
 				// change then we fallback to make sure it's higher or equal to the
@@ -192,9 +200,9 @@ impl<Block: BlockT> WarpSyncProof<Block> {
 	fn verify(
 		&self,
 		set_id: SetId,
-		authorities: AuthorityList,
-		hard_forks: &HashMap<(Block::Hash, NumberFor<Block>), (SetId, AuthorityList)>,
-	) -> Result<(SetId, AuthorityList), Error>
+		authorities: AuthorityListOf<Id>,
+		hard_forks: &HashMap<(Block::Hash, NumberFor<Block>), (SetId, AuthorityListOf<Id>)>,
+	) -> Result<(SetId, AuthorityListOf<Id>), Error>
 	where
 		NumberFor<Block>: BlockNumberOps,
 	{
@@ -220,7 +228,7 @@ impl<Block: BlockT> WarpSyncProof<Block> {
 					))
 				}
 
-				if let Some(scheduled_change) = find_scheduled_change::<Block>(&proof.header) {
+				if let Some(scheduled_change) = find_scheduled_change_generic::<Block, Id>(&proof.header) {
 					current_authorities = scheduled_change.next_authorities;
 					current_set_id += 1;
 				} else if fragment_num != self.proofs.len() - 1 || !self.is_finished {
@@ -237,17 +245,27 @@ impl<Block: BlockT> WarpSyncProof<Block> {
 }
 
 /// Implements network API for warp sync.
-pub struct NetworkProvider<Block: BlockT, Backend: ClientBackend<Block>, Id = sp_consensus_grandpa::AuthorityId>
-where
+///
+/// `Id`/`Sig` default to classical ed25519 GRANDPA types. Continuum supplies Dilithium/ML-DSA-65
+/// so proof generation/verification and `current_authorities()` stay typed end-to-end — no
+/// length-based ed25519 placeholder substitution.
+pub struct NetworkProvider<
+	Block: BlockT,
+	Backend: ClientBackend<Block>,
+	Id = AuthorityId,
+	Sig = AuthoritySignature,
+> where
 	NumberFor<Block>: BlockNumberOps,
 	Id: crate::authorities::AuthorityIdBounds,
 {
 	backend: Arc<Backend>,
 	authority_set: SharedAuthoritySet<Block::Hash, NumberFor<Block>, Id>,
-	hard_forks: HashMap<(Block::Hash, NumberFor<Block>), (SetId, AuthorityList)>,
+	hard_forks: HashMap<(Block::Hash, NumberFor<Block>), (SetId, AuthorityListOf<Id>)>,
+	_phantom: std::marker::PhantomData<Sig>,
 }
 
-impl<Block: BlockT, Backend: ClientBackend<Block>, Id> NetworkProvider<Block, Backend, Id>
+impl<Block: BlockT, Backend: ClientBackend<Block>, Id, Sig>
+	NetworkProvider<Block, Backend, Id, Sig>
 where
 	NumberFor<Block>: BlockNumberOps,
 	Id: crate::authorities::AuthorityIdBounds,
@@ -256,7 +274,7 @@ where
 	pub fn new(
 		backend: Arc<Backend>,
 		authority_set: SharedAuthoritySet<Block::Hash, NumberFor<Block>, Id>,
-		hard_forks: Vec<AuthoritySetHardFork<Block>>,
+		hard_forks: Vec<AuthoritySetHardFork<Block, Id>>,
 	) -> Self {
 		NetworkProvider {
 			backend,
@@ -265,21 +283,23 @@ where
 				.into_iter()
 				.map(|fork| (fork.block, (fork.set_id, fork.authorities)))
 				.collect(),
+			_phantom: std::marker::PhantomData,
 		}
 	}
 }
 
-impl<Block: BlockT, Backend: ClientBackend<Block>, Id> WarpSyncProvider<Block>
-	for NetworkProvider<Block, Backend, Id>
+impl<Block: BlockT, Backend: ClientBackend<Block>, Id, Sig> WarpSyncProvider<Block, Id>
+	for NetworkProvider<Block, Backend, Id, Sig>
 where
 	NumberFor<Block>: BlockNumberOps,
-	Id: crate::authorities::AuthorityIdBounds,
+	Id: crate::authorities::AuthorityIdBounds + Decode,
+	Sig: AuthoritySignatureBounds + Decode + Send + Sync + 'static,
 {
 	fn generate(
 		&self,
 		start: Block::Hash,
 	) -> Result<EncodedProof, Box<dyn std::error::Error + Send + Sync>> {
-		let proof = WarpSyncProof::<Block>::generate(
+		let proof = WarpSyncProof::<Block, Id, Sig>::generate(
 			&*self.backend,
 			start,
 			&self.authority_set.authority_set_changes(),
@@ -292,10 +312,10 @@ where
 		&self,
 		proof: &EncodedProof,
 		set_id: SetId,
-		authorities: AuthorityList,
-	) -> Result<VerificationResult<Block>, Box<dyn std::error::Error + Send + Sync>> {
+		authorities: AuthorityListOf<Id>,
+	) -> Result<VerificationResult<Block, Id>, Box<dyn std::error::Error + Send + Sync>> {
 		let EncodedProof(proof) = proof;
-		let proof = WarpSyncProof::<Block>::decode_all(&mut proof.as_slice())
+		let proof = WarpSyncProof::<Block, Id, Sig>::decode_all(&mut proof.as_slice())
 			.map_err(|e| format!("Proof decoding error: {:?}", e))?;
 		let last_header = proof
 			.proofs
@@ -305,9 +325,13 @@ where
 		let (next_set_id, next_authorities) =
 			proof.verify(set_id, authorities, &self.hard_forks).map_err(Box::new)?;
 		if proof.is_finished {
-			Ok(VerificationResult::<Block>::Complete(next_set_id, next_authorities, last_header))
+			Ok(VerificationResult::<Block, Id>::Complete(
+				next_set_id,
+				next_authorities,
+				last_header,
+			))
 		} else {
-			Ok(VerificationResult::<Block>::Partial(
+			Ok(VerificationResult::<Block, Id>::Partial(
 				next_set_id,
 				next_authorities,
 				last_header.hash(),
@@ -315,28 +339,11 @@ where
 		}
 	}
 
-	fn current_authorities(&self) -> AuthorityList {
-		// Convert from generic Id to AuthorityList (Vec<(AuthorityId, u64)>)
-		// For warp sync, we need the standard AuthorityList format
-		// This may need adjustment for quantum types
-		self.authority_set.inner().current_authorities.iter()
-			.map(|(id, weight)| {
-				// Convert Id to bytes and try to decode as AuthorityId
-				let bytes = id.as_ref();
-				if bytes.len() == 32 {
-					// Standard Ed25519 public key
-					let mut arr = [0u8; 32];
-					arr.copy_from_slice(bytes);
-					let pk = sp_core::ed25519::Public::from_raw(arr);
-					(sp_consensus_grandpa::AuthorityId::from(pk), *weight)
-				} else {
-					// For larger keys (Dilithium), create a placeholder
-					// Warp sync verification will fail for non-Ed25519, but that's expected
-					let pk = sp_core::ed25519::Public::from_raw([0u8; 32]);
-					(sp_consensus_grandpa::AuthorityId::from(pk), *weight)
-				}
-			})
-			.collect()
+	fn current_authorities(&self) -> AuthorityListOf<Id> {
+		// SECURITY: return the node's real Id-typed authority list. The previous
+		// `len() == 32` ed25519 / all-zero placeholder path silently broke Dilithium
+		// GRANDPA warp sync and is intentionally removed.
+		self.authority_set.inner().current_authorities.clone()
 	}
 }
 
