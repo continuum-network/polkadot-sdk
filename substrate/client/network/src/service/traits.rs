@@ -174,13 +174,16 @@ pub trait NetworkBackend<B: BlockT + 'static, H: ExHashT>: Send + 'static {
 /// Signer with network identity
 pub trait NetworkSigner {
 	/// Signs the message with the `KeyPair` that defines the local [`PeerId`].
+	///
+	/// Continuum: the local identity is ML-DSA-65 (not ed25519).
 	fn sign_with_local_identity(&self, msg: Vec<u8>) -> Result<Signature, SigningError>;
 
 	/// Verify signature using peer's public key.
 	///
-	/// `public_key` must be Protobuf-encoded ed25519 public key.
+	/// `public_key` must be Protobuf-encoded libp2p public key matching the peer's
+	/// identity (Continuum: ML-DSA-65 with Continuum-private key type).
 	///
-	/// Returns `Err(())` if public cannot be parsed into a valid ed25519 public key.
+	/// Returns `Err` if the public key cannot be parsed.
 	fn verify(
 		&self,
 		peer_id: sc_network_types::PeerId,

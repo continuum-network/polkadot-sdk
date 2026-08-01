@@ -22,7 +22,7 @@ clap = { features = ["derive", "string", "wrap_help"], workspace = true }
 fdlimit = { workspace = true }
 futures = { workspace = true }
 itertools = { workspace = true }
-libp2p-identity = { features = ["ed25519", "peerid"], workspace = true }
+libp2p-identity = { features = ["ed25519", "peerid", "rand", "mldsa65"], workspace = true }
 log = { workspace = true, default-features = true }
 names = { workspace = true }
 codec = { workspace = true, default-features = true }

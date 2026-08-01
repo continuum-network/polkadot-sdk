@@ -111,11 +111,13 @@ impl Into<sc_tracing::TracingReceiver> for TracingReceiver {
 }
 
 /// The type of the node key.
+///
+/// Continuum: ML-DSA-65 only (ed25519 removed).
 #[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
 #[value(rename_all = "kebab-case")]
 pub enum NodeKeyType {
-	/// Use ed25519.
-	Ed25519,
+	/// Use Continuum ML-DSA-65 (NIST FIPS 204) for libp2p PeerId / Noise identity_sig.
+	MlDsa65,
 }
 
 /// The crypto scheme to use.

@@ -130,6 +130,7 @@ pub mod warp_proof;
 pub use authorities::{AuthoritySet, AuthoritySetChanges, SharedAuthoritySet};
 pub use aux_schema::best_justification;
 pub use communication::grandpa_protocol_name::standard_name as protocol_standard_name;
+pub use environment::{equivocation_report_disposition, EquivocationReportDisposition};
 pub use finality_grandpa::voter::report;
 pub use finality_proof::{FinalityProof, FinalityProofError, FinalityProofProvider};
 pub use import::{find_forced_change, find_forced_change_generic, find_scheduled_change, find_scheduled_change_generic, GrandpaBlockImport};

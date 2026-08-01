@@ -3,23 +3,12 @@
 // Copyright (C) Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// 	http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+//! Implementation of the `generate-node-key` subcommand (Continuum: ML-DSA-65).
 
-//! Implementation of the `generate-node-key` subcommand
-
-use crate::{build_network_key_dir_or_default, Error, NODE_KEY_ED25519_FILE};
+use crate::{build_network_key_dir_or_default, Error};
 use clap::{Args, Parser};
-use libp2p_identity::{ed25519, Keypair};
+use libp2p_identity::Keypair;
+use sc_network::config::NODE_KEY_MLDSA65_FILE;
 use sc_service::BasePath;
 use std::{
 	fs,
@@ -27,7 +16,7 @@ use std::{
 	path::PathBuf,
 };
 
-/// Common arguments accross all generate key commands, subkey and node.
+/// Common arguments across all generate key commands, subkey and node.
 #[derive(Debug, Args, Clone)]
 pub struct GenerateKeyCmdCommon {
 	/// Name of file to save secret key to.
@@ -45,15 +34,13 @@ pub struct GenerateKeyCmdCommon {
 #[derive(Debug, Clone, Parser)]
 #[command(
 	name = "generate-node-key",
-	about = "Generate a random node key, write it to a file or stdout \
+	about = "Generate a random Continuum ML-DSA-65 node key, write it to a file or stdout \
 		 	and write the corresponding peer-id to stderr"
 )]
 pub struct GenerateNodeKeyCmd {
 	#[clap(flatten)]
 	pub common: GenerateKeyCmdCommon,
 	/// Specify the chain specification.
-	///
-	/// It can be any of the predefined chains like dev, local, staging, polkadot, kusama.
 	#[arg(long, value_name = "CHAIN_SPEC")]
 	pub chain: Option<String>,
 	/// A directory where the key should be saved. If a key already
@@ -88,10 +75,6 @@ impl GenerateNodeKeyCmd {
 	}
 }
 
-// Utility function for generating a key based on the provided CLI arguments
-//
-// `file`  - Name of file to save secret key to
-// `bin`
 fn generate_key(
 	file: &Option<PathBuf>,
 	bin: bool,
@@ -100,14 +83,14 @@ fn generate_key(
 	default_base_path: bool,
 	executable_name: Option<&String>,
 ) -> Result<(), Error> {
-	let keypair = ed25519::Keypair::generate();
-
-	let secret = keypair.secret();
+	let mldsa = libp2p_identity::mldsa65::Keypair::generate();
+	let material = mldsa.to_secret_material();
+	let keypair = Keypair::from(mldsa);
 
 	let file_data = if bin {
-		secret.as_ref().to_owned()
+		material
 	} else {
-		array_bytes::bytes2hex("", secret).into_bytes()
+		array_bytes::bytes2hex("", &material).into_bytes()
 	};
 
 	match (file, base_path, default_base_path) {
@@ -121,23 +104,22 @@ fn generate_key(
 
 			fs::create_dir_all(network_path.as_path())?;
 
-			let key_path = network_path.join(NODE_KEY_ED25519_FILE);
+			let key_path = network_path.join(NODE_KEY_MLDSA65_FILE);
 			if key_path.exists() {
 				eprintln!("Skip generation, a key already exists in {:?}", key_path);
 				return Err(Error::KeyAlreadyExistsInPath(key_path));
 			} else {
-				eprintln!("Generating key in {:?}", key_path);
+				eprintln!("Generating ML-DSA-65 node key in {:?}", key_path);
 				fs::write(key_path, file_data)?
 			}
 		},
 		(None, None, false) => io::stdout().lock().write_all(&file_data)?,
 		(_, _, _) => {
-			// This should not happen, arguments are marked as mutually exclusive.
 			return Err(Error::Input("Mutually exclusive arguments provided".into()));
 		},
 	}
 
-	eprintln!("{}", Keypair::from(keypair).public().to_peer_id());
+	eprintln!("{}", keypair.public().to_peer_id());
 
 	Ok(())
 }
@@ -156,9 +138,11 @@ pub mod tests {
 		let file_path = file.path().display().to_string();
 		let generate = GenerateNodeKeyCmd::parse_from(&["generate-node-key", "--file", &file_path]);
 		assert!(generate.run("test", &String::from("test")).is_ok());
-		let mut buf = String::new();
-		assert!(file.read_to_string(&mut buf).is_ok());
-		assert!(array_bytes::hex2bytes(&buf).is_ok());
+		let mut buf = Vec::new();
+		assert!(file.read_to_end(&mut buf).is_ok());
+		// Default output is hex of 5984-byte material.
+		let raw = array_bytes::hex2bytes(std::str::from_utf8(&buf).unwrap().trim()).unwrap();
+		assert_eq!(raw.len(), libp2p_identity::mldsa65::SECRET_MATERIAL_LENGTH);
 	}
 
 	#[test]
@@ -168,19 +152,14 @@ pub mod tests {
 			.path()
 			.join("chains/test_id/")
 			.join(DEFAULT_NETWORK_CONFIG_PATH)
-			.join(NODE_KEY_ED25519_FILE);
+			.join(NODE_KEY_MLDSA65_FILE);
 		let base_path = base_dir.path().display().to_string();
 		let generate =
 			GenerateNodeKeyCmd::parse_from(&["generate-node-key", "--base-path", &base_path]);
 		assert!(generate.run("test_id", &String::from("test")).is_ok());
-		let buf = fs::read_to_string(key_path.as_path()).unwrap();
-		assert!(array_bytes::hex2bytes(&buf).is_ok());
+		let buf = fs::read(key_path.as_path()).unwrap();
+		assert_eq!(buf.len(), libp2p_identity::mldsa65::SECRET_MATERIAL_LENGTH);
 
 		assert!(generate.run("test_id", &String::from("test")).is_err());
-		let new_buf = fs::read_to_string(key_path).unwrap();
-		assert_eq!(
-			array_bytes::hex2bytes(&new_buf).unwrap(),
-			array_bytes::hex2bytes(&buf).unwrap()
-		);
 	}
 }

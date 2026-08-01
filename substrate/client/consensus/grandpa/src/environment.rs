@@ -44,7 +44,7 @@ use sp_api::ApiExt;
 use sp_blockchain::HeaderMetadata;
 use sp_consensus::SelectChain as SelectChainT;
 use sp_consensus_grandpa::{
-	AuthorityId, AuthoritySignature, CommitOf, EquivocationOf, GrandpaApi,
+	AuthorityId, AuthoritySignature, CommitOf, EquivocationOf, EquivocationProofOf, GrandpaApi,
 	RoundNumber, SetId, GRANDPA_ENGINE_ID,
 };
 use sp_runtime::traits::{Block as BlockT, Header as HeaderT, NumberFor, Zero};
@@ -511,6 +511,10 @@ where
 	/// extrinsic to report the equivocation. In particular, the session membership
 	/// proof must be generated at the block at which the given set was active which
 	/// isn't necessarily the best block if there are pending authority set changes.
+	///
+	/// As of GrandpaApi v4, offender identity size is not constrained to ed25519's 32
+	/// bytes: Dilithium / ML-DSA-65 authorities (1952-byte public keys) are reported via
+	/// the raw (`_raw`) GrandpaApi methods using a SCALE-encoded [`EquivocationProofOf`].
 	pub(crate) fn report_equivocation(
 		&self,
 		equivocation: EquivocationOf<Block::Hash, NumberFor<Block>, Id, Sig>,
@@ -566,36 +570,118 @@ where
 			None => best_block_hash,
 		};
 
-		// Check if we're using quantum keys (Dilithium) by checking key size
-		// Dilithium public keys are 1952 bytes, Ed25519 are 32 bytes
-		let offender_bytes = equivocation.offender().as_ref();
-		if offender_bytes.len() != 32 {
-			// Quantum keys detected - equivocation reporting not yet supported
-			// The runtime API currently expects Ed25519 signatures in EquivocationProof
-			// TODO: Add generic equivocation proof support to GrandpaApi
-			warn!(
-				target: LOG_TARGET,
-				"Equivocation detected but reporting is not yet supported for quantum keys. \
-				 Offender key size: {} bytes. Equivocation will not be slashed.",
-				offender_bytes.len()
-			);
-			return Ok(())
+		let offender_bytes = equivocation.offender().as_ref().to_vec();
+		let grandpa_api_version = self
+			.client
+			.runtime_api()
+			.api_version::<dyn GrandpaApi<Block>>(current_set_latest_hash)
+			.map_err(Error::RuntimeApi)?
+			.unwrap_or(0);
+
+		match equivocation_report_disposition(offender_bytes.len(), grandpa_api_version) {
+			EquivocationReportDisposition::SubmitRaw => {
+				self.report_equivocation_raw(
+					equivocation,
+					offender_bytes,
+					current_set_latest_hash,
+					best_block_hash,
+					authority_set.set_id,
+				)
+			},
+			EquivocationReportDisposition::SubmitLegacyEd25519 => {
+				self.report_equivocation_legacy_ed25519(
+					offender_bytes,
+					current_set_latest_hash,
+					best_block_hash,
+					authority_set.set_id,
+				)
+			},
+			EquivocationReportDisposition::SkipUnsupported { offender_len } => {
+				warn!(
+					target: LOG_TARGET,
+					"Equivocation detected but GrandpaApi v{} cannot report offender keys of \
+					 {} bytes (need GrandpaApi >= 4 for non-ed25519 / Dilithium authorities). \
+					 Equivocation will not be submitted on-chain.",
+					grandpa_api_version, offender_len,
+				);
+				Ok(())
+			},
 		}
+	}
 
-		// Ed25519 path - convert to AuthorityId for runtime API
-		let mut arr = [0u8; 32];
-		arr.copy_from_slice(offender_bytes);
-		let offender_ed25519 = sp_consensus_grandpa::AuthorityId::from(sp_core::ed25519::Public::from_raw(arr));
-
-		// generate key ownership proof at that block
+	/// GrandpaApi v4+ path: encode [`EquivocationProofOf`] and call the raw report APIs.
+	fn report_equivocation_raw(
+		&self,
+		equivocation: EquivocationOf<Block::Hash, NumberFor<Block>, Id, Sig>,
+		offender_bytes: Vec<u8>,
+		current_set_latest_hash: Block::Hash,
+		best_block_hash: Block::Hash,
+		set_id: SetId,
+	) -> Result<(), Error> {
 		let key_owner_proof = match self
 			.client
 			.runtime_api()
-			.generate_key_ownership_proof(
+			.generate_key_ownership_proof_raw(
 				current_set_latest_hash,
-				authority_set.set_id,
-				offender_ed25519.clone(),
+				set_id,
+				offender_bytes.clone(),
 			)
+			.map_err(Error::RuntimeApi)?
+		{
+			Some(proof) => proof,
+			None => {
+				debug!(
+					target: LOG_TARGET,
+					"Equivocation offender key-ownership proof unavailable \
+					 (offender may not be in the set, or KeyOwnerProof is disabled). \
+					 offender_key_len={}",
+					offender_bytes.len(),
+				);
+				return Ok(())
+			},
+		};
+
+		let equivocation_proof =
+			EquivocationProofOf::<Block::Hash, NumberFor<Block>, Id, Sig>::new(set_id, equivocation);
+		let encoded_proof = equivocation_proof.encode();
+
+		let mut runtime_api = self.client.runtime_api();
+		runtime_api.register_extension(
+			self.offchain_tx_pool_factory.offchain_transaction_pool(best_block_hash),
+		);
+
+		runtime_api
+			.submit_report_equivocation_unsigned_extrinsic_raw(
+				best_block_hash,
+				encoded_proof,
+				key_owner_proof,
+			)
+			.map_err(Error::RuntimeApi)?;
+
+		Ok(())
+	}
+
+	/// Pre-v4 GrandpaApi path for classical ed25519 offenders only.
+	fn report_equivocation_legacy_ed25519(
+		&self,
+		offender_bytes: Vec<u8>,
+		current_set_latest_hash: Block::Hash,
+		best_block_hash: Block::Hash,
+		set_id: SetId,
+	) -> Result<(), Error> {
+		if offender_bytes.len() != 32 {
+			return Ok(())
+		}
+
+		let mut arr = [0u8; 32];
+		arr.copy_from_slice(&offender_bytes);
+		let offender_ed25519 =
+			AuthorityId::from(sp_core::ed25519::Public::from_raw(arr));
+
+		let key_owner_proof = match self
+			.client
+			.runtime_api()
+			.generate_key_ownership_proof(current_set_latest_hash, set_id, offender_ed25519)
 			.map_err(Error::RuntimeApi)?
 		{
 			Some(proof) => proof,
@@ -608,45 +694,92 @@ where
 			},
 		};
 
-		// submit equivocation report at **best** block
-		// Note: This path only works for Ed25519 keys. Quantum key equivocation is handled above.
-		let equivocation_proof = match &equivocation {
-			EquivocationOf::Prevote(eq) => {
-				// For Ed25519, we need to convert the generic signed votes
-				// This requires the signature type to be AuthoritySignature
-				warn!(
-					target: LOG_TARGET,
-					"Ed25519 equivocation reporting requires signature conversion - skipping"
-				);
-				return Ok(())
-			},
-			EquivocationOf::Precommit(eq) => {
-				warn!(
-					target: LOG_TARGET,
-					"Ed25519 equivocation reporting requires signature conversion - skipping"
-				);
-				return Ok(())
-			},
-		};
+		// Pre-v4 typed submit still requires a fully constructed ed25519
+		// `EquivocationProof`. Continuum chains use GrandpaApi v4 + the raw path;
+		// this legacy branch only proves key-ownership was obtainable.
+		let _ = (best_block_hash, key_owner_proof);
+		warn!(
+			target: LOG_TARGET,
+			"Legacy ed25519 GrandpaApi (< v4) equivocation submit path is not wired for \
+			 generic Id/Sig environments; upgrade runtime GrandpaApi to v4."
+		);
+		Ok(())
+	}
+}
 
-		#[allow(unreachable_code)]
-		{
-			let mut runtime_api = self.client.runtime_api();
+/// How the client should surface a detected GRANDPA equivocation to the runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EquivocationReportDisposition {
+	/// Use GrandpaApi v4 raw methods (any offender key length, including Dilithium).
+	SubmitRaw,
+	/// Use pre-v4 ed25519-typed GrandpaApi methods (32-byte offender keys only).
+	SubmitLegacyEd25519,
+	/// Cannot report with the available API version.
+	SkipUnsupported {
+		/// Observed offender public-key length in bytes.
+		offender_len: usize,
+	},
+}
 
-			runtime_api.register_extension(
-				self.offchain_tx_pool_factory.offchain_transaction_pool(best_block_hash),
-			);
+/// Decide whether a detected equivocation can be reported given offender key size and
+/// GrandpaApi version.
+///
+/// Phase 10.3 / Workstream C: Dilithium-sized offenders (1952 bytes) must **not** be
+/// dropped when GrandpaApi >= 4. The previous hard-fail was
+/// `if offender_bytes.len() != 32 { return Ok(()) }`.
+pub fn equivocation_report_disposition(
+	offender_key_len: usize,
+	grandpa_api_version: u32,
+) -> EquivocationReportDisposition {
+	if grandpa_api_version >= 4 {
+		EquivocationReportDisposition::SubmitRaw
+	} else if offender_key_len == 32 {
+		EquivocationReportDisposition::SubmitLegacyEd25519
+	} else {
+		EquivocationReportDisposition::SkipUnsupported { offender_len: offender_key_len }
+	}
+}
 
-			runtime_api
-				.submit_report_equivocation_unsigned_extrinsic(
-					best_block_hash,
-					equivocation_proof,
-					key_owner_proof,
-				)
-				.map_err(Error::RuntimeApi)?;
+#[cfg(test)]
+mod equivocation_disposition_tests {
+	use super::{equivocation_report_disposition, EquivocationReportDisposition};
 
-			Ok(())
-		}
+	/// ML-DSA-65 / Dilithium3 public key length (NIST FIPS 204).
+	const DILITHIUM_PUBLIC_KEY_LEN: usize = 1952;
+
+	#[test]
+	fn dilithium_sized_offender_is_not_dropped_on_grandpa_api_v4() {
+		assert_eq!(
+			equivocation_report_disposition(DILITHIUM_PUBLIC_KEY_LEN, 4),
+			EquivocationReportDisposition::SubmitRaw,
+			"Dilithium offenders must use the raw report path on GrandpaApi v4+"
+		);
+	}
+
+	#[test]
+	fn ed25519_sized_offender_uses_raw_path_on_grandpa_api_v4() {
+		assert_eq!(
+			equivocation_report_disposition(32, 4),
+			EquivocationReportDisposition::SubmitRaw
+		);
+	}
+
+	#[test]
+	fn dilithium_sized_offender_skipped_on_pre_v4_api() {
+		assert_eq!(
+			equivocation_report_disposition(DILITHIUM_PUBLIC_KEY_LEN, 3),
+			EquivocationReportDisposition::SkipUnsupported {
+				offender_len: DILITHIUM_PUBLIC_KEY_LEN
+			}
+		);
+	}
+
+	#[test]
+	fn ed25519_sized_offender_uses_legacy_on_pre_v4_api() {
+		assert_eq!(
+			equivocation_report_disposition(32, 3),
+			EquivocationReportDisposition::SubmitLegacyEd25519
+		);
 	}
 }
 

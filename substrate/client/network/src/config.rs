@@ -40,6 +40,7 @@ use sc_network_types::{
 	multiaddr::{self, Multiaddr},
 	PeerId,
 };
+use libp2p::identity::{self as libp2p_identity, Keypair as Libp2pKeypair};
 
 use crate::service::{ensure_addresses_consistent_with_transport, traits::NetworkBackend};
 use codec::Encode;
@@ -288,23 +289,32 @@ impl NonReservedPeerMode {
 	}
 }
 
+/// Default on-disk filename for Continuum ML-DSA-65 node identity material.
+pub const NODE_KEY_MLDSA65_FILE: &str = "secret_mldsa65";
+
+/// Legacy ed25519 node-key filename — Continuum rejects this path (fail closed).
+pub const NODE_KEY_ED25519_FILE_LEGACY: &str = "secret_ed25519";
+
 /// The configuration of a node's secret key, describing the type of key
 /// and how it is obtained. A node's identity keypair is the result of
 /// the evaluation of the node key configuration.
+///
+/// Continuum is **ML-DSA-65 only** for libp2p node identity. Classical
+/// ed25519 `secret_ed25519` / `--node-key` hex seeds are not supported.
 #[derive(Clone, Debug)]
 pub enum NodeKeyConfig {
-	/// A Ed25519 secret key configuration.
-	Ed25519(Secret<ed25519::SecretKey>),
+	/// Continuum ML-DSA-65 secret material (`secret||public`, 5984 bytes).
+	MlDsa65(Secret<libp2p_identity::mldsa65::SecretKey>),
 }
 
 impl Default for NodeKeyConfig {
 	fn default() -> NodeKeyConfig {
-		Self::Ed25519(Secret::New)
+		Self::MlDsa65(Secret::New)
 	}
 }
 
-/// The options for obtaining a Ed25519 secret key.
-pub type Ed25519Secret = Secret<ed25519::SecretKey>;
+/// The options for obtaining Continuum ML-DSA-65 node-key material.
+pub type MlDsa65Secret = Secret<libp2p_identity::mldsa65::SecretKey>;
 
 /// The configuration options for obtaining a secret key `K`.
 #[derive(Clone)]
@@ -315,7 +325,7 @@ pub enum Secret<K> {
 	/// it is created with a newly generated secret key `K`. The format
 	/// of the file is determined by `K`:
 	///
-	///   * `ed25519::SecretKey`: An unencoded 32 bytes Ed25519 secret key.
+	///   * Continuum ML-DSA-65: raw `secret||public` (5984 bytes), or hex of that.
 	File(PathBuf),
 	/// Always generate a new secret key `K`.
 	New,
@@ -332,41 +342,85 @@ impl<K> fmt::Debug for Secret<K> {
 }
 
 impl NodeKeyConfig {
-	/// Evaluate a `NodeKeyConfig` to obtain an identity `Keypair`:
+	/// Evaluate a `NodeKeyConfig` to obtain a libp2p identity [`Libp2pKeypair`].
 	///
-	///  * If the secret is configured as input, the corresponding keypair is returned.
-	///
-	///  * If the secret is configured as a file, it is read from that file, if it exists. Otherwise
-	///    a new secret is generated and stored. In either case, the keypair obtained from the
-	///    secret is returned.
-	///
-	///  * If the secret is configured to be new, it is generated and the corresponding keypair is
-	///    returned.
-	pub fn into_keypair(self) -> io::Result<ed25519::Keypair> {
+	/// Continuum returns an ML-DSA-65 `Keypair`. Legacy ed25519 material is rejected.
+	pub fn into_keypair(self) -> io::Result<Libp2pKeypair> {
 		use NodeKeyConfig::*;
 		match self {
-			Ed25519(Secret::New) => Ok(ed25519::Keypair::generate()),
+			MlDsa65(Secret::New) => Ok(Libp2pKeypair::generate_mldsa65()),
 
-			Ed25519(Secret::Input(k)) => Ok(ed25519::Keypair::from(k).into()),
+			MlDsa65(Secret::Input(k)) => Ok(Libp2pKeypair::from(libp2p_identity::mldsa65::Keypair::from(k))),
 
-			Ed25519(Secret::File(f)) => get_secret(
-				f,
-				|mut b| match String::from_utf8(b.to_vec()).ok().and_then(|s| {
-					if s.len() == 64 {
-						array_bytes::hex2bytes(&s).ok()
-					} else {
-						None
-					}
-				}) {
-					Some(s) => ed25519::SecretKey::try_from_bytes(s),
-					_ => ed25519::SecretKey::try_from_bytes(&mut b),
-				},
-				ed25519::SecretKey::generate,
-				|b| b.as_ref().to_vec(),
-			)
-			.map(ed25519::Keypair::from),
+			MlDsa65(Secret::File(f)) => {
+				reject_legacy_ed25519_node_key(&f)?;
+				get_secret(
+					f,
+					|mut b| parse_mldsa65_secret_bytes(&mut b),
+					libp2p_identity::mldsa65::SecretKey::generate,
+					|b| b.as_ref().to_vec(),
+				)
+				.map(|sk| Libp2pKeypair::from(libp2p_identity::mldsa65::Keypair::from(sk)))
+			},
 		}
 	}
+}
+
+/// Reject leftover classical `secret_ed25519` beside a missing Continuum key.
+fn reject_legacy_ed25519_node_key(path: &Path) -> io::Result<()> {
+	if path
+		.file_name()
+		.and_then(|n| n.to_str())
+		.is_some_and(|n| n == NODE_KEY_ED25519_FILE_LEGACY)
+	{
+		return Err(io::Error::new(
+			io::ErrorKind::InvalidInput,
+			"Continuum rejects ed25519 node identity (`secret_ed25519`). \
+			 Generate ML-DSA-65 material with `key generate-node-key` \
+			 (writes `secret_mldsa65`).",
+		));
+	}
+	if let Some(parent) = path.parent() {
+		let legacy = parent.join(NODE_KEY_ED25519_FILE_LEGACY);
+		if legacy.exists() && !path.exists() {
+			return Err(io::Error::new(
+				io::ErrorKind::InvalidData,
+				format!(
+					"Found legacy ed25519 node key at {} but Continuum requires ML-DSA-65 \
+					 (`{}`). Remove the legacy file and run `key generate-node-key`.",
+					legacy.display(),
+					NODE_KEY_MLDSA65_FILE
+				),
+			));
+		}
+	}
+	Ok(())
+}
+
+fn parse_mldsa65_secret_bytes(
+	b: &mut [u8],
+) -> Result<libp2p_identity::mldsa65::SecretKey, libp2p_identity::DecodingError> {
+	// Reject classical 32-byte / 64-hex ed25519 leftovers explicitly.
+	if b.len() == 32 || (b.len() == 64 && std::str::from_utf8(b).map(|s| s.chars().all(|c| c.is_ascii_hexdigit())).unwrap_or(false)) {
+		return Err(libp2p_identity::DecodingError::failed_to_parse(
+			"Continuum ML-DSA-65 node key (rejected ed25519-sized material)",
+			io::Error::new(
+				io::ErrorKind::InvalidData,
+				"ed25519 node-key material is not accepted; use secret_mldsa65",
+			),
+		));
+	}
+	if let Ok(s) = std::str::from_utf8(b) {
+		let trimmed = s.trim();
+		if trimmed.len() == libp2p_identity::mldsa65::SECRET_MATERIAL_LENGTH * 2 &&
+			trimmed.chars().all(|c| c.is_ascii_hexdigit())
+		{
+			if let Ok(mut raw) = array_bytes::hex2bytes(trimmed) {
+				return libp2p_identity::mldsa65::SecretKey::try_from_bytes(&mut raw);
+			}
+		}
+	}
+	libp2p_identity::mldsa65::SecretKey::try_from_bytes(b)
 }
 
 /// Load a secret key from a file, if it exists, or generate a
@@ -949,32 +1003,50 @@ mod tests {
 		tempfile::Builder::new().prefix(prefix).tempdir().unwrap()
 	}
 
-	fn secret_bytes(kp: ed25519::Keypair) -> Vec<u8> {
-		kp.secret().to_bytes().into()
+	fn peer_id_of(kp: &Libp2pKeypair) -> libp2p_identity::PeerId {
+		kp.public().to_peer_id()
 	}
 
 	#[test]
 	fn test_secret_file() {
 		let tmp = tempdir_with_prefix("x");
 		std::fs::remove_dir(tmp.path()).unwrap(); // should be recreated
-		let file = tmp.path().join("x").to_path_buf();
-		let kp1 = NodeKeyConfig::Ed25519(Secret::File(file.clone())).into_keypair().unwrap();
-		let kp2 = NodeKeyConfig::Ed25519(Secret::File(file.clone())).into_keypair().unwrap();
-		assert!(file.is_file() && secret_bytes(kp1) == secret_bytes(kp2))
+		let file = tmp.path().join(NODE_KEY_MLDSA65_FILE).to_path_buf();
+		let kp1 = NodeKeyConfig::MlDsa65(Secret::File(file.clone())).into_keypair().unwrap();
+		let kp2 = NodeKeyConfig::MlDsa65(Secret::File(file.clone())).into_keypair().unwrap();
+		assert!(file.is_file() && peer_id_of(&kp1) == peer_id_of(&kp2));
 	}
 
 	#[test]
 	fn test_secret_input() {
-		let sk = ed25519::SecretKey::generate();
-		let kp1 = NodeKeyConfig::Ed25519(Secret::Input(sk.clone())).into_keypair().unwrap();
-		let kp2 = NodeKeyConfig::Ed25519(Secret::Input(sk)).into_keypair().unwrap();
-		assert!(secret_bytes(kp1) == secret_bytes(kp2));
+		let sk = libp2p_identity::mldsa65::SecretKey::generate();
+		let kp1 = NodeKeyConfig::MlDsa65(Secret::Input(sk.clone())).into_keypair().unwrap();
+		let kp2 = NodeKeyConfig::MlDsa65(Secret::Input(sk)).into_keypair().unwrap();
+		assert_eq!(peer_id_of(&kp1), peer_id_of(&kp2));
 	}
 
 	#[test]
 	fn test_secret_new() {
-		let kp1 = NodeKeyConfig::Ed25519(Secret::New).into_keypair().unwrap();
-		let kp2 = NodeKeyConfig::Ed25519(Secret::New).into_keypair().unwrap();
-		assert!(secret_bytes(kp1) != secret_bytes(kp2));
+		let kp1 = NodeKeyConfig::MlDsa65(Secret::New).into_keypair().unwrap();
+		let kp2 = NodeKeyConfig::MlDsa65(Secret::New).into_keypair().unwrap();
+		assert_ne!(peer_id_of(&kp1), peer_id_of(&kp2));
+	}
+
+	#[test]
+	fn rejects_legacy_secret_ed25519_when_mldsa_missing() {
+		let tmp = tempdir_with_prefix("legacy");
+		let legacy = tmp.path().join(NODE_KEY_ED25519_FILE_LEGACY);
+		std::fs::write(&legacy, [0u8; 32]).unwrap();
+		let mldsa_path = tmp.path().join(NODE_KEY_MLDSA65_FILE);
+		let err = NodeKeyConfig::MlDsa65(Secret::File(mldsa_path)).into_keypair().unwrap_err();
+		assert!(err.to_string().contains("legacy ed25519") || err.to_string().contains("ML-DSA-65"));
+	}
+
+	#[test]
+	fn rejects_ed25519_sized_file_bytes() {
+		let tmp = tempdir_with_prefix("ed-sized");
+		let file = tmp.path().join(NODE_KEY_MLDSA65_FILE);
+		std::fs::write(&file, [7u8; 32]).unwrap();
+		assert!(NodeKeyConfig::MlDsa65(Secret::File(file)).into_keypair().is_err());
 	}
 }

@@ -80,6 +80,12 @@ pub enum Error {
 	/// Litep2p error.
 	#[error("Litep2p error: `{0}`")]
 	Litep2p(litep2p::Error),
+	/// Continuum disables litep2p because it cannot host ML-DSA-65 node identity.
+	#[error(
+		"litep2p network backend is disabled on Continuum: node identity is ML-DSA-65-only \
+		 (use the libp2p NetworkWorker backend)"
+	)]
+	Litep2pDisabledForMlDsa65Identity,
 }
 
 // Make `Debug` use the `Display` implementation.

@@ -3,19 +3,7 @@
 // Copyright (C) Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// 	http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
-//! Implementation of the `inspect-node-key` subcommand
+//! Implementation of the `inspect-node-key` subcommand (Continuum: ML-DSA-65).
 
 use crate::Error;
 use clap::Parser;
@@ -30,7 +18,7 @@ use std::{
 #[derive(Debug, Parser)]
 #[command(
 	name = "inspect-node-key",
-	about = "Load a node key from a file or stdin and print the corresponding peer-id."
+	about = "Load a Continuum ML-DSA-65 node key from a file or stdin and print the peer-id."
 )]
 pub struct InspectNodeKeyCmd {
 	/// Name of file to read the secret key from.
@@ -55,21 +43,28 @@ impl InspectNodeKeyCmd {
 		let mut file_data = match &self.file {
 			Some(file) => fs::read(&file)?,
 			None => {
-				let mut buf = Vec::with_capacity(64);
+				let mut buf = Vec::with_capacity(libp2p_identity::mldsa65::SECRET_MATERIAL_LENGTH);
 				io::stdin().lock().read_to_end(&mut buf)?;
 				buf
 			},
 		};
 
 		if !self.bin {
-			// With hex input, give to the user a bit of tolerance about whitespaces
 			let keyhex = String::from_utf8_lossy(&file_data);
 			file_data = array_bytes::hex2bytes(keyhex.trim())
 				.map_err(|_| "failed to decode secret as hex")?;
 		}
 
+		if file_data.len() == 32 || file_data.len() == 64 {
+			return Err(Error::Input(
+				"ed25519-sized node key rejected; Continuum requires ML-DSA-65 secret_mldsa65 \
+				 (secret||public, 5984 bytes)"
+					.into(),
+			))
+		}
+
 		let keypair =
-			Keypair::ed25519_from_bytes(&mut file_data).map_err(|_| "Bad node key file")?;
+			Keypair::mldsa65_from_bytes(&mut file_data).map_err(|_| "Bad ML-DSA-65 node key file")?;
 
 		println!("{}", keypair.public().to_peer_id());
 
@@ -87,11 +82,11 @@ mod tests {
 	fn inspect_node_key() {
 		let path = tempfile::tempdir().unwrap().into_path().join("node-id").into_os_string();
 		let path = path.to_str().unwrap();
-		let cmd = GenerateNodeKeyCmd::parse_from(&["generate-node-key", "--file", path]);
+		let cmd = GenerateNodeKeyCmd::parse_from(&["generate-node-key", "--file", path, "--bin"]);
 
 		assert!(cmd.run("test", &String::from("test")).is_ok());
 
-		let cmd = InspectNodeKeyCmd::parse_from(&["inspect-node-key", "--file", path]);
+		let cmd = InspectNodeKeyCmd::parse_from(&["inspect-node-key", "--file", path, "--bin"]);
 		assert!(cmd.run().is_ok());
 	}
 }

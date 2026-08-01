@@ -967,7 +967,14 @@ sp_api::decl_runtime_apis! {
 	/// applied in the runtime after those N blocks have passed.
 	///
 	/// The consensus protocol will coordinate the handoff externally.
-	#[api_version(3)]
+	///
+	/// # Version history
+	/// - **v3**: added [`Self::grandpa_authorities_raw`] for non-ed25519 authority lists.
+	/// - **v4**: added [`Self::submit_report_equivocation_unsigned_extrinsic_raw`] and
+	///   [`Self::generate_key_ownership_proof_raw`] so Dilithium (and other non-32-byte)
+	///   authority identities can be reported without forcing `AuthorityId`/`AuthoritySignature`
+	///   (ed25519) at the runtime-API boundary.
+	#[api_version(4)]
 	pub trait GrandpaApi {
 		/// Get the current GRANDPA authorities and weights. This should not change except
 		/// for when changes are scheduled and the corresponding delay has passed.
@@ -990,8 +997,23 @@ sp_api::decl_runtime_apis! {
 		/// `None` when creation of the extrinsic fails, e.g. if equivocation
 		/// reporting is disabled for the given runtime (i.e. this method is
 		/// hardcoded to return `None`). Only useful in an offchain context.
+		///
+		/// Prefer [`Self::submit_report_equivocation_unsigned_extrinsic_raw`] when the
+		/// chain's GRANDPA authorities are not ed25519-shaped.
 		fn submit_report_equivocation_unsigned_extrinsic(
 			equivocation_proof: EquivocationProof<Block::Hash, NumberFor<Block>>,
+			key_owner_proof: OpaqueKeyOwnershipProof,
+		) -> Option<()>;
+
+		/// Submits an unsigned extrinsic to report an equivocation using a SCALE-encoded
+		/// [`EquivocationProofOf`] whose `Id`/`Sig` match the chain's configured GRANDPA
+		/// authority types (e.g. Dilithium / ML-DSA-65).
+		///
+		/// The proof bytes are opaque at this boundary so the runtime API does not hardcode
+		/// ed25519 `AuthorityId`/`AuthoritySignature`. Returns `None` when reporting is
+		/// disabled or the extrinsic cannot be created.
+		fn submit_report_equivocation_unsigned_extrinsic_raw(
+			equivocation_proof: alloc::vec::Vec<u8>,
 			key_owner_proof: OpaqueKeyOwnershipProof,
 		) -> Option<()>;
 
@@ -1006,9 +1028,22 @@ sp_api::decl_runtime_apis! {
 		/// which the given set id is live on-chain. Future implementations will
 		/// instead use indexed data through an offchain worker, not requiring
 		/// older states to be available.
+		///
+		/// Prefer [`Self::generate_key_ownership_proof_raw`] when the chain's GRANDPA
+		/// authorities are not ed25519-shaped.
 		fn generate_key_ownership_proof(
 			set_id: SetId,
 			authority_id: AuthorityId,
+		) -> Option<OpaqueKeyOwnershipProof>;
+
+		/// Generates a key-ownership proof for an authority identified by raw public-key
+		/// bytes (any length; Dilithium ML-DSA-65 keys are 1952 bytes).
+		///
+		/// Same semantics as [`Self::generate_key_ownership_proof`], but without forcing
+		/// the ed25519 `AuthorityId` type at the runtime-API boundary.
+		fn generate_key_ownership_proof_raw(
+			set_id: SetId,
+			authority_id: alloc::vec::Vec<u8>,
 		) -> Option<OpaqueKeyOwnershipProof>;
 
 		/// Get current GRANDPA authority set id.

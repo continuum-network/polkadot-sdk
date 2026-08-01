@@ -67,7 +67,6 @@ use libp2p::{
 	connection_limits::{ConnectionLimits, Exceeded},
 	core::{upgrade, ConnectedPoint, Endpoint},
 	identify::Info as IdentifyInfo,
-	identity::ed25519,
 	kad::{record::Key as KademliaKey, Record},
 	multiaddr::{self, Multiaddr},
 	swarm::{
@@ -269,14 +268,11 @@ where
 		} = params.network_config;
 
 		// Private and public keys configuration.
+		// Continuum: `into_keypair` returns a full libp2p `Keypair` (ML-DSA-65).
+		// Do NOT cast to ed25519 — Noise identity_sig must use the same ML-DSA PeerId key.
 		let local_identity = network_config.node_key.clone().into_keypair()?;
 		let local_public = local_identity.public();
-		let local_peer_id = local_public.to_peer_id();
-
-		// Convert to libp2p types.
-		let local_identity: ed25519::Keypair = local_identity.into();
-		let local_public: ed25519::PublicKey = local_public.into();
-		let local_peer_id: PeerId = local_peer_id.into();
+		let local_peer_id: PeerId = local_public.to_peer_id();
 
 		network_config.boot_nodes = network_config
 			.boot_nodes
@@ -379,7 +375,7 @@ where
 			};
 
 			transport::build_transport(
-				local_identity.clone().into(),
+				local_identity.clone(),
 				config_mem,
 				network_config.yamux_window_size,
 				yamux_maximum_buffer_size,
@@ -627,7 +623,7 @@ where
 			listen_addresses: listen_addresses_set.clone(),
 			num_connected: num_connected.clone(),
 			local_peer_id,
-			local_identity: local_identity.into(),
+			local_identity,
 			to_worker,
 			notification_protocol_ids,
 			protocol_handles,

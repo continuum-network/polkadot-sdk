@@ -248,15 +248,11 @@ impl Litep2pNetworkBackend {
 
 impl Litep2pNetworkBackend {
 	/// Get `litep2p` keypair from `NodeKeyConfig`.
-	fn get_keypair(node_key: &NodeKeyConfig) -> Result<(Keypair, litep2p::PeerId), Error> {
-		let secret: litep2p::crypto::ed25519::SecretKey =
-			node_key.clone().into_keypair()?.secret().into();
-
-		let local_identity = Keypair::from(secret);
-		let local_public = local_identity.public();
-		let local_peer_id = local_public.to_peer_id();
-
-		Ok((local_identity, local_peer_id))
+	///
+	/// Continuum hard-disables litep2p for node identity: litep2p only supports
+	/// ed25519 PeerIds, while Continuum requires ML-DSA-65-only libp2p identity.
+	fn get_keypair(_node_key: &NodeKeyConfig) -> Result<(Keypair, litep2p::PeerId), Error> {
+		Err(Error::Litep2pDisabledForMlDsa65Identity)
 	}
 
 	/// Configure transport protocols for `Litep2pNetworkBackend`.

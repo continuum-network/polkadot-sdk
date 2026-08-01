@@ -39,7 +39,7 @@ use sp_consensus::{BlockOrigin, Error as ConsensusError, SelectChain};
 use sp_consensus_grandpa::{
 	AuthorityList, EquivocationProof, GrandpaApi, OpaqueKeyOwnershipProof, GRANDPA_ENGINE_ID,
 };
-use sp_core::H256;
+use sp_core::{crypto::ByteArray, H256};
 use sp_keyring::Ed25519Keyring;
 use sp_keystore::{testing::MemoryKeystore, Keystore, KeystorePtr};
 use sp_runtime::{
@@ -184,6 +184,14 @@ sp_api::mock_impl_runtime_apis! {
 			self.inner.genesis_authorities.clone()
 		}
 
+		fn grandpa_authorities_raw(&self) -> Vec<(Vec<u8>, u64)> {
+			self.inner
+				.genesis_authorities
+				.iter()
+				.map(|(id, weight)| (id.to_raw_vec(), *weight))
+				.collect()
+		}
+
 		fn current_set_id(&self) -> SetId {
 			0
 		}
@@ -195,9 +203,23 @@ sp_api::mock_impl_runtime_apis! {
 			None
 		}
 
+		fn submit_report_equivocation_unsigned_extrinsic_raw(
+			_equivocation_proof: Vec<u8>,
+			_key_owner_proof: OpaqueKeyOwnershipProof,
+		) -> Option<()> {
+			None
+		}
+
 		fn generate_key_ownership_proof(
 			_set_id: SetId,
 			_authority_id: AuthorityId,
+		) -> Option<OpaqueKeyOwnershipProof> {
+			None
+		}
+
+		fn generate_key_ownership_proof_raw(
+			_set_id: SetId,
+			_authority_id: Vec<u8>,
 		) -> Option<OpaqueKeyOwnershipProof> {
 			None
 		}

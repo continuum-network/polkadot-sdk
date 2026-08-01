@@ -824,7 +824,8 @@ lazy_static = { version = "1.4.0" }
 libc = { version = "0.2.155" }
 libfuzzer-sys = { version = "0.4" }
 libp2p = { version = "0.52.4" }
-libp2p-identity = { version = "0.2.9" }
+# Continuum patches crates.io libp2p-identity → ../vendor/libp2p-identity (ML-DSA-65).
+libp2p-identity = { version = "0.2.13" }
 libsecp256k1 = { version = "0.7.0", default-features = false }
 linked-hash-map = { version = "0.5.4" }
 linked_hash_set = { version = "0.1.4" }
@@ -1441,3 +1442,7 @@ wasmi = { opt-level = 3 }
 x25519-dalek = { opt-level = 3 }
 yamux = { opt-level = 3 }
 zeroize = { opt-level = 3 }
+
+# Continuum Phase 10.4: ML-DSA-65 libp2p identity (vendored patch of libp2p-identity 0.2.13).
+[patch.crates-io]
+libp2p-identity = { path = "../vendor/libp2p-identity" }

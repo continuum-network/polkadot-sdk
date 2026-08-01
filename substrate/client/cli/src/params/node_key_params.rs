@@ -16,68 +16,43 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
+//! Continuum ML-DSA-65-only node key parameters.
+
 use clap::Args;
-use sc_network::config::{ed25519, NodeKeyConfig};
+use sc_network::config::{NodeKeyConfig, NODE_KEY_ED25519_FILE_LEGACY, NODE_KEY_MLDSA65_FILE};
 use sc_service::Role;
-use sp_core::H256;
-use std::{path::PathBuf, str::FromStr};
+use std::path::PathBuf;
 
 use crate::{arg_enums::NodeKeyType, error, Error};
 
-/// The file name of the node's Ed25519 secret key inside the chain-specific
-/// network config directory, if neither `--node-key` nor `--node-key-file`
-/// is specified in combination with `--node-key-type=ed25519`.
-pub(crate) const NODE_KEY_ED25519_FILE: &str = "secret_ed25519";
-
 /// Parameters used to create the `NodeKeyConfig`, which determines the keypair
 /// used for libp2p networking.
+///
+/// Continuum: ML-DSA-65 only. Classical ed25519 `--node-key` / `secret_ed25519` are rejected.
 #[derive(Debug, Clone, Args)]
 pub struct NodeKeyParams {
-	/// Secret key to use for p2p networking.
+	/// Secret key hex for p2p networking.
 	///
-	/// The value is a string that is parsed according to the choice of
-	/// `--node-key-type` as follows:
-	///
-	///  - `ed25519`: the value is parsed as a hex-encoded Ed25519 32 byte secret key (64 hex
-	///    chars)
-	///
-	/// The value of this option takes precedence over `--node-key-file`.
+	/// Continuum no longer accepts 64-hex ed25519 seeds. Prefer `--node-key-file`
+	/// pointing at Continuum `secret_mldsa65` material (5984 raw bytes =
+	/// ML-DSA-65 secret||public). If set, this value must be hex-encoded
+	/// Continuum secret material (11968 hex chars).
 	///
 	/// WARNING: Secrets provided as command-line arguments are easily exposed.
-	/// Use of this option should be limited to development and testing. To use
-	/// an externally managed secret key, use `--node-key-file` instead.
+	/// Use `--node-key-file` for anything beyond throwaway local tests.
 	#[arg(long, value_name = "KEY")]
 	pub node_key: Option<String>,
 
 	/// Crypto primitive to use for p2p networking.
 	///
-	/// The secret key of the node is obtained as follows:
-	///
-	/// - If the `--node-key` option is given, the value is parsed as a secret key according to the
-	///   type. See the documentation for `--node-key`.
-	///
-	/// - If the `--node-key-file` option is given, the secret key is read from the specified file.
-	///   See the documentation for `--node-key-file`.
-	///
-	/// - Otherwise, the secret key is read from a file with a predetermined, type-specific name
-	///   from the chain-specific network config directory inside the base directory specified by
-	///   `--base-dir`. If this file does not exist, it is created with a newly generated secret
-	///   key of the chosen type.
-	///
-	/// The node's secret key determines the corresponding public key and hence the
-	/// node's peer ID in the context of libp2p.
-	#[arg(long, value_name = "TYPE", value_enum, ignore_case = true, default_value_t = NodeKeyType::Ed25519)]
+	/// Continuum only supports `mldsa65`.
+	#[arg(long, value_name = "TYPE", value_enum, ignore_case = true, default_value_t = NodeKeyType::MlDsa65)]
 	pub node_key_type: NodeKeyType,
 
 	/// File from which to read the node's secret key to use for p2p networking.
 	///
-	/// The contents of the file are parsed according to the choice of `--node-key-type`
-	/// as follows:
-	///
-	/// - `ed25519`: the file must contain an unencoded 32 byte or hex encoded Ed25519 secret key.
-	///
-	/// If the file does not exist, it is created with a newly generated secret key of
-	/// the chosen type.
+	/// Continuum: raw or hex-encoded `secret||public` ML-DSA-65 material (5984 bytes).
+	/// Default filename in the network config dir is `secret_mldsa65`.
 	#[arg(long, value_name = "FILE")]
 	pub node_key_file: Option<PathBuf>,
 
@@ -88,7 +63,7 @@ pub struct NodeKeyParams {
 	/// not being able to reach you if your identity changes after entering the active set.
 	///
 	/// For minimal node downtime if no custom `node-key-file` argument is provided
-	/// the network-key is usually persisted accross nodes restarts,
+	/// the network-key is usually persisted across nodes restarts,
 	/// in the `network` folder from directory provided in `--base-path`
 	///
 	/// Warning!! If you ever run the node with this argument, make sure
@@ -106,15 +81,27 @@ impl NodeKeyParams {
 		role: Role,
 		is_dev: bool,
 	) -> error::Result<NodeKeyConfig> {
-		Ok(match self.node_key_type {
-			NodeKeyType::Ed25519 => {
+		match self.node_key_type {
+			NodeKeyType::MlDsa65 => {
 				let secret = if let Some(node_key) = self.node_key.as_ref() {
-					parse_ed25519_secret(node_key)?
+					parse_mldsa65_secret_hex(node_key)?
 				} else {
 					let key_path = self
 						.node_key_file
 						.clone()
-						.unwrap_or_else(|| net_config_dir.join(NODE_KEY_ED25519_FILE));
+						.unwrap_or_else(|| net_config_dir.join(NODE_KEY_MLDSA65_FILE));
+
+					let legacy = net_config_dir.join(NODE_KEY_ED25519_FILE_LEGACY);
+					if legacy.exists() && !key_path.exists() {
+						return Err(Error::Input(format!(
+							"Found legacy ed25519 node key at {} but Continuum requires \
+							 ML-DSA-65 (`{}`). Remove the legacy file and run \
+							 `key generate-node-key`.",
+							legacy.display(),
+							NODE_KEY_MLDSA65_FILE
+						)))
+					}
+
 					if !self.unsafe_force_node_key_generation &&
 						role.is_authority() && !is_dev &&
 						!key_path.exists()
@@ -124,145 +111,104 @@ impl NodeKeyParams {
 					sc_network::config::Secret::File(key_path)
 				};
 
-				NodeKeyConfig::Ed25519(secret)
+				Ok(NodeKeyConfig::MlDsa65(secret))
 			},
-		})
+		}
 	}
 }
 
-/// Create an error caused by an invalid node key argument.
 fn invalid_node_key(e: impl std::fmt::Display) -> error::Error {
 	error::Error::Input(format!("Invalid node key: {}", e))
 }
 
-/// Parse a Ed25519 secret key from a hex string into a `sc_network::Secret`.
-fn parse_ed25519_secret(hex: &str) -> error::Result<sc_network::config::Ed25519Secret> {
-	H256::from_str(hex).map_err(invalid_node_key).and_then(|bytes| {
-		ed25519::SecretKey::try_from_bytes(bytes)
-			.map(sc_network::config::Secret::Input)
-			.map_err(invalid_node_key)
-	})
+fn parse_mldsa65_secret_hex(
+	hex: &str,
+) -> error::Result<sc_network::config::MlDsa65Secret> {
+	let trimmed = hex.trim();
+	// Explicitly reject classical ed25519 64-hex seeds.
+	if trimmed.len() == 64 && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+		return Err(invalid_node_key(
+			"64-hex ed25519 --node-key is not supported on Continuum; \
+			 use --node-key-file with secret_mldsa65 (ML-DSA-65 secret||public)",
+		))
+	}
+	let mut raw = array_bytes::hex2bytes(trimmed)
+		.map_err(|e| invalid_node_key(format!("{:?}", e)))?;
+	libp2p_identity::mldsa65::SecretKey::try_from_bytes(&mut raw)
+		.map(sc_network::config::Secret::Input)
+		.map_err(invalid_node_key)
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use clap::ValueEnum;
-	use sc_network::config::ed25519;
+	use sc_network::config::NODE_KEY_MLDSA65_FILE;
 	use std::fs::{self, File};
 	use tempfile::TempDir;
 
 	#[test]
-	fn test_node_key_config_input() {
-		fn secret_input(net_config_dir: &PathBuf) -> error::Result<()> {
-			NodeKeyType::value_variants().iter().try_for_each(|t| {
-				let node_key_type = *t;
-				let sk = match node_key_type {
-					NodeKeyType::Ed25519 => ed25519::SecretKey::generate().as_ref().to_vec(),
-				};
-				let params = NodeKeyParams {
-					node_key_type,
-					node_key: Some(format!("{:x}", H256::from_slice(sk.as_ref()))),
-					node_key_file: None,
-					unsafe_force_node_key_generation: false,
-				};
-				params.node_key(net_config_dir, Role::Authority, false).and_then(|c| match c {
-					NodeKeyConfig::Ed25519(sc_network::config::Secret::Input(ref ski))
-						if node_key_type == NodeKeyType::Ed25519 && &sk[..] == ski.as_ref() =>
-						Ok(()),
-					_ => Err(error::Error::Input("Unexpected node key config".into())),
-				})
-			})
+	fn test_node_key_config_default_path() {
+		let dir = PathBuf::from("x");
+		let params = NodeKeyParams {
+			node_key_type: NodeKeyType::MlDsa65,
+			node_key: None,
+			node_key_file: None,
+			unsafe_force_node_key_generation: true,
+		};
+		match params.node_key(&dir, Role::Authority, false).unwrap() {
+			NodeKeyConfig::MlDsa65(sc_network::config::Secret::File(ref f)) => {
+				assert_eq!(f, &dir.join(NODE_KEY_MLDSA65_FILE));
+			},
 		}
-
-		assert!(secret_input(&PathBuf::from_str("x").unwrap()).is_ok());
 	}
 
 	#[test]
-	fn test_node_key_config_file() {
-		fn check_key(file: PathBuf, key: &ed25519::SecretKey) {
-			let params = NodeKeyParams {
-				node_key_type: NodeKeyType::Ed25519,
-				node_key: None,
-				node_key_file: Some(file),
-				unsafe_force_node_key_generation: false,
-			};
-
-			let node_key = params
-				.node_key(&PathBuf::from("not-used"), Role::Authority, false)
-				.expect("Creates node key config")
-				.into_keypair()
-				.expect("Creates node key pair");
-
-			if node_key.secret().as_ref() != key.as_ref() {
-				panic!("Invalid key")
-			}
-		}
-
-		let tmp = tempfile::Builder::new().prefix("alice").tempdir().expect("Creates tempfile");
-		let file = tmp.path().join("mysecret").to_path_buf();
-		let key = ed25519::SecretKey::generate();
-
-		fs::write(&file, array_bytes::bytes2hex("", key.as_ref())).expect("Writes secret key");
-		check_key(file.clone(), &key);
-
-		fs::write(&file, &key).expect("Writes secret key");
-		check_key(file.clone(), &key);
+	fn rejects_ed25519_hex_node_key() {
+		let params = NodeKeyParams {
+			node_key_type: NodeKeyType::MlDsa65,
+			node_key: Some("0000000000000000000000000000000000000000000000000000000000000001".into()),
+			node_key_file: None,
+			unsafe_force_node_key_generation: false,
+		};
+		assert!(params.node_key(&PathBuf::from("x"), Role::Full, false).is_err());
 	}
 
 	#[test]
-	fn test_node_key_config_default() {
-		fn with_def_params<F>(f: F, unsafe_force_node_key_generation: bool) -> error::Result<()>
-		where
-			F: Fn(NodeKeyParams) -> error::Result<()>,
-		{
-			NodeKeyType::value_variants().iter().try_for_each(|t| {
-				let node_key_type = *t;
-				f(NodeKeyParams {
-					node_key_type,
-					node_key: None,
-					node_key_file: None,
-					unsafe_force_node_key_generation,
-				})
-			})
-		}
-
-		fn some_config_dir(
-			net_config_dir: &PathBuf,
-			unsafe_force_node_key_generation: bool,
-			role: Role,
-			is_dev: bool,
-		) -> error::Result<()> {
-			with_def_params(
-				|params| {
-					let dir = PathBuf::from(net_config_dir.clone());
-					let typ = params.node_key_type;
-					params.node_key(net_config_dir, role, is_dev).and_then(move |c| match c {
-						NodeKeyConfig::Ed25519(sc_network::config::Secret::File(ref f))
-							if typ == NodeKeyType::Ed25519 &&
-								f == &dir.join(NODE_KEY_ED25519_FILE) =>
-							Ok(()),
-						_ => Err(error::Error::Input("Unexpected node key config".into())),
-					})
-				},
-				unsafe_force_node_key_generation,
-			)
-		}
-
-		assert!(some_config_dir(&PathBuf::from_str("x").unwrap(), false, Role::Full, false).is_ok());
-		assert!(
-			some_config_dir(&PathBuf::from_str("x").unwrap(), false, Role::Authority, true).is_ok()
-		);
-		assert!(
-			some_config_dir(&PathBuf::from_str("x").unwrap(), true, Role::Authority, false).is_ok()
-		);
-		assert!(matches!(
-			some_config_dir(&PathBuf::from_str("x").unwrap(), false, Role::Authority, false),
-			Err(Error::NetworkKeyNotFound(_))
-		));
-
+	fn rejects_legacy_secret_ed25519_file() {
 		let tempdir = TempDir::new().unwrap();
-		let _file = File::create(tempdir.path().join(NODE_KEY_ED25519_FILE)).unwrap();
-		assert!(some_config_dir(&tempdir.path().into(), false, Role::Authority, false).is_ok());
+		let _ = File::create(tempdir.path().join(NODE_KEY_ED25519_FILE_LEGACY)).unwrap();
+		let params = NodeKeyParams {
+			node_key_type: NodeKeyType::MlDsa65,
+			node_key: None,
+			node_key_file: None,
+			unsafe_force_node_key_generation: true,
+		};
+		assert!(params
+			.node_key(&tempdir.path().into(), Role::Authority, false)
+			.is_err());
+	}
+
+	#[test]
+	fn file_roundtrip_peer_id_stable() {
+		let tmp = tempfile::Builder::new().prefix("alice").tempdir().expect("tempdir");
+		let file = tmp.path().join("mysecret");
+		let sk = libp2p_identity::mldsa65::SecretKey::generate();
+		fs::write(&file, sk.as_ref()).expect("write");
+
+		let params = NodeKeyParams {
+			node_key_type: NodeKeyType::MlDsa65,
+			node_key: None,
+			node_key_file: Some(file.clone()),
+			unsafe_force_node_key_generation: false,
+		};
+		let kp1 = params
+			.node_key(&PathBuf::from("not-used"), Role::Authority, false)
+			.expect("config")
+			.into_keypair()
+			.expect("kp");
+		let kp2 = NodeKeyConfig::MlDsa65(sc_network::config::Secret::File(file))
+			.into_keypair()
+			.expect("kp2");
+		assert_eq!(kp1.public().to_peer_id(), kp2.public().to_peer_id());
 	}
 }
