@@ -563,6 +563,45 @@ impl<T: Config> Pallet<T> {
 		}
 	}
 
+	/// Schedule an authority-set change **and** increment [`CurrentSetId`], mirroring the
+	/// set-id bump that [`OneSessionHandler::on_new_session`] performs when it successfully
+	/// schedules a change.
+	///
+	/// Bare [`Self::schedule_change`] only writes `PendingChange`; the session handler is what
+	/// normally advances `CurrentSetId`. Callers that schedule a change *outside* a session
+	/// rotation (e.g. Continuum Phase 9.6 mid-session governance cutover) must use this helper
+	/// so runtime `current_set_id()` stays aligned with the GRANDPA client's `set_id` after
+	/// the digest is applied. Warp sync rehydrates the voter from the runtime API; a stale
+	/// `CurrentSetId` leaves late nodes listening on the wrong gossip topic and stuck at the
+	/// warp finalized tip.
+	///
+	/// `session_index` is recorded in [`SetIdSession`] for the new set id (equivocation
+	/// key-ownership proofs), matching `on_new_session`.
+	///
+	/// Does **not** replace `schedule_change` for `on_new_session` — that path already bumps
+	/// the set id itself and must not double-increment.
+	pub fn schedule_change_incrementing_set_id(
+		next_authorities: AuthorityListOf<T>,
+		in_blocks: BlockNumberFor<T>,
+		forced: Option<BlockNumberFor<T>>,
+		session_index: SessionIndex,
+	) -> DispatchResult {
+		Self::schedule_change(next_authorities, in_blocks, forced)?;
+
+		let current_set_id = CurrentSetId::<T>::mutate(|s| {
+			*s += 1;
+			*s
+		});
+
+		let max_set_id_session_entries = T::MaxSetIdSessionEntries::get().max(1);
+		if current_set_id >= max_set_id_session_entries {
+			SetIdSession::<T>::remove(current_set_id - max_set_id_session_entries);
+		}
+		SetIdSession::<T>::insert(current_set_id, session_index);
+
+		Ok(())
+	}
+
 	/// Deposit one of this module's logs.
 	fn deposit_log(log: ConsensusLogOf<BlockNumberFor<T>, T::AuthorityId>) {
 		let log = DigestItem::Consensus(GRANDPA_ENGINE_ID, log.encode());
