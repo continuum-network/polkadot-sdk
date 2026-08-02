@@ -696,6 +696,12 @@ impl_runtime_apis! {
 			Vec::new()
 		}
 
+		// Continuum GrandpaApi v3+: opaque authority list for non-ed25519 (Dilithium) chains.
+		// Test runtime has no GRANDPA authorities; keep empty (matches grandpa_authorities).
+		fn grandpa_authorities_raw() -> Vec<(Vec<u8>, sp_consensus_grandpa::AuthorityWeight)> {
+			Vec::new()
+		}
+
 		fn current_set_id() -> sp_consensus_grandpa::SetId {
 			0
 		}
@@ -710,9 +716,26 @@ impl_runtime_apis! {
 			None
 		}
 
+		// Continuum GrandpaApi v4: Dilithium-capable raw equivocation report path.
+		// Equivocation reporting is disabled in the test runtime (same as the typed API).
+		fn submit_report_equivocation_unsigned_extrinsic_raw(
+			_equivocation_proof: Vec<u8>,
+			_key_owner_proof: sp_consensus_grandpa::OpaqueKeyOwnershipProof,
+		) -> Option<()> {
+			None
+		}
+
 		fn generate_key_ownership_proof(
 			_set_id: sp_consensus_grandpa::SetId,
 			_authority_id: sp_consensus_grandpa::AuthorityId,
+		) -> Option<sp_consensus_grandpa::OpaqueKeyOwnershipProof> {
+			None
+		}
+
+		// Continuum GrandpaApi v4: ownership proof for raw (non-32-byte) authority ids.
+		fn generate_key_ownership_proof_raw(
+			_set_id: sp_consensus_grandpa::SetId,
+			_authority_id: Vec<u8>,
 		) -> Option<sp_consensus_grandpa::OpaqueKeyOwnershipProof> {
 			None
 		}

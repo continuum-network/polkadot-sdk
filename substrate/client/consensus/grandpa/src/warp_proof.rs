@@ -87,7 +87,10 @@ where
 	/// Generates a warp sync proof starting at the given block. It will generate authority set
 	/// change proofs for all changes that happened from `begin` until the current authority set
 	/// (capped by MAX_WARP_SYNC_PROOF_SIZE).
-	fn generate<Backend>(
+	///
+	/// Public so Continuum (and other non-ed25519 GRANDPA chains) can integration-test
+	/// Dilithium generate+verify without relying on this crate's `#[cfg(test)]` modules.
+	pub fn generate<Backend>(
 		backend: &Backend,
 		begin: Block::Hash,
 		set_changes: &AuthoritySetChanges<NumberFor<Block>>,
@@ -197,7 +200,9 @@ where
 	/// Verifies the warp sync proof starting at the given set id and with the given authorities.
 	/// Verification stops when either the proof is exhausted or finality for the target header can
 	/// be proven. If the proof is valid the new set id and authorities is returned.
-	fn verify(
+	///
+	/// Public for the same Continuum Dilithium integration-test reason as [`Self::generate`].
+	pub fn verify(
 		&self,
 		set_id: SetId,
 		authorities: AuthorityListOf<Id>,

@@ -82,6 +82,9 @@ sp-runtime.default-features = true
 [dev-dependencies]
 assert_matches = { workspace = true }
 finality-grandpa = { features = ["derive-codec", "test-helpers"], workspace = true, default-features = true }
+# Phase 10.2 / Continuum: real ML-DSA-65 sign/verify for Dilithium warp-sync generate+verify test
+pqcrypto-mldsa = { version = "0.1" }
+pqcrypto-traits = { version = "0.3" }
 serde = { workspace = true, default-features = true }
 tokio = { workspace = true, default-features = true }
 sc-network = { default-features = true, path = "../../network" }

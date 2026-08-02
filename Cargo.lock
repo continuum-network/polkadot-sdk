@@ -17644,6 +17644,8 @@ dependencies = [
  "log",
  "parity-scale-codec",
  "parking_lot 0.12.3",
+ "pqcrypto-mldsa",
+ "pqcrypto-traits",
  "rand",
  "sc-block-builder",
  "sc-chain-spec",
