@@ -20,7 +20,7 @@
 
 use crate::Error;
 use clap::Parser;
-use libp2p_identity::Keypair;
+use libp2p_identity::{mldsa65, Keypair, PeerId};
 use std::{
 	fs,
 	io::{self, Read},
@@ -31,7 +31,7 @@ use std::{
 #[derive(Debug, Parser)]
 #[command(
 	name = "inspect-node-key",
-	about = "Load a node key from a file or stdin and print the corresponding peer-id."
+	about = "Load a Continuum ML-DSA-65 node key from a file or stdin and print the peer-id."
 )]
 pub struct InspectNodeKeyCmd {
 	/// Name of file to read the secret key from.
@@ -53,10 +53,17 @@ pub struct InspectNodeKeyCmd {
 impl InspectNodeKeyCmd {
 	/// runs the command
 	pub fn run(&self) -> Result<(), Error> {
+		println!("{}", self.peer_id()?);
+
+		Ok(())
+	}
+
+	/// Load the node key and return the corresponding peer-id.
+	pub(crate) fn peer_id(&self) -> Result<PeerId, Error> {
 		let mut file_data = match &self.file {
 			Some(file) => fs::read(&file)?,
 			None => {
-				let mut buf = Vec::with_capacity(64);
+				let mut buf = Vec::with_capacity(mldsa65::SECRET_MATERIAL_LENGTH * 2);
 				io::stdin().lock().read_to_end(&mut buf)?;
 				buf
 			},
@@ -69,12 +76,18 @@ impl InspectNodeKeyCmd {
 				.map_err(|_| "failed to decode secret as hex")?;
 		}
 
-		let keypair =
-			Keypair::ed25519_from_bytes(&mut file_data).map_err(|_| "Bad node key file")?;
+		if file_data.len() == 32 || file_data.len() == 64 {
+			return Err(Error::Input(
+				"ed25519-sized node key rejected; Continuum requires ML-DSA-65 secret_mldsa65 \
+				 (secret||public, 5984 bytes)"
+					.into(),
+			));
+		}
 
-		println!("{}", keypair.public().to_peer_id());
+		let keypair = Keypair::mldsa65_from_bytes(&mut file_data)
+			.map_err(|_| "Bad ML-DSA-65 node key file")?;
 
-		Ok(())
+		Ok(keypair.public().to_peer_id())
 	}
 }
 

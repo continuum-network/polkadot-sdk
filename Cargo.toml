@@ -891,7 +891,8 @@ landlock = { version = "0.3.0" }
 libc = { version = "0.2.155" }
 libfuzzer-sys = { version = "0.4" }
 libp2p = { version = "0.54.1" }
-libp2p-identity = { version = "0.2.9" }
+# Continuum patches crates.io libp2p-identity with its ML-DSA-65 fork (see [patch.crates-io]).
+libp2p-identity = { version = "0.2.13" }
 libp2p-kad = { version = "0.46.2", default-features = false }
 libsecp256k1 = { version = "0.7.0", default-features = false }
 linked-hash-map = { version = "0.5.4" }
@@ -1520,3 +1521,7 @@ twox-hash = { opt-level = 3 }
 wasmi = { opt-level = 3 }
 x25519-dalek = { opt-level = 3 }
 zeroize = { opt-level = 3 }
+
+# Continuum: ML-DSA-65 libp2p node identity (fork of libp2p-identity 0.2.13).
+[patch.crates-io]
+libp2p-identity = { git = "https://github.com/continuum-network/libp2p-identity.git", rev = "dfd7b101e7834eee8ce29dee6af37665601fa7f7" }
