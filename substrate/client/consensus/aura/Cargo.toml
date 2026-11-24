@@ -45,6 +45,7 @@ thiserror = { workspace = true }
 sc-keystore = { default-features = true, workspace = true }
 sc-network = { default-features = true, workspace = true }
 sc-network-test = { workspace = true }
+scale-info = { workspace = true }
 sp-keyring = { default-features = true, workspace = true }
 sp-timestamp = { default-features = true, workspace = true }
 sp-tracing = { default-features = true, workspace = true }

@@ -63,10 +63,13 @@ impl BackingGroupConnectionHelper {
 	}
 
 	/// Update the current slot and initiate connections to backing groups if needed.
-	pub async fn update<P>(&mut self, current_slot: Slot, authorities: &[P::Public])
+	pub async fn update<P>(&mut self, current_slot: Slot, authorities: &[<P as sp_core::Pair>::Public])
 	where
-		P: sp_core::Pair + Send + Sync,
-		P::Public: Codec,
+		P: sp_core::Pair
+			+ sp_application_crypto::AppCrypto<Public = <P as sp_core::Pair>::Public>
+			+ Send
+			+ Sync,
+		<P as sp_core::Pair>::Public: Codec,
 	{
 		if Some(current_slot) <= self.our_slot {
 			// Current slot or next slot is ours.
@@ -223,13 +226,13 @@ async fn can_build_upon<Block: BlockT, Client, P>(
 	included_block: Block::Hash,
 	client: &Client,
 	keystore: &KeystorePtr,
-) -> Option<SlotClaim<P::Public>>
+) -> Option<SlotClaim<<P as Pair>::Public>>
 where
 	Client: ProvideRuntimeApi<Block>,
-	Client::Api: AuraApi<Block, P::Public> + AuraUnincludedSegmentApi<Block> + ApiExt<Block>,
-	P: Pair,
-	P::Public: Codec,
-	P::Signature: Codec,
+	Client::Api: AuraApi<Block, <P as Pair>::Public> + AuraUnincludedSegmentApi<Block> + ApiExt<Block>,
+	P: Pair + sp_application_crypto::AppCrypto<Public = <P as Pair>::Public, Signature = <P as Pair>::Signature>,
+	<P as Pair>::Public: Codec,
+	<P as Pair>::Signature: Codec,
 {
 	let mut runtime_api = client.runtime_api();
 	runtime_api.set_call_context(sp_core::traits::CallContext::Onchain);

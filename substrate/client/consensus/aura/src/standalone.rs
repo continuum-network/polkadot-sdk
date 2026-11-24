@@ -90,14 +90,18 @@ pub fn slot_author<P: Pair>(slot: Slot, authorities: &[AuthorityId<P>]) -> Optio
 ///
 /// This returns `None` if the slot author is not locally controlled, and `Some` if it is,
 /// with the public key of the slot author.
-pub async fn claim_slot<P: Pair>(
+pub async fn claim_slot<P>(
 	slot: Slot,
 	authorities: &[AuthorityId<P>],
 	keystore: &KeystorePtr,
-) -> Option<P::Public> {
+) -> Option<<P as Pair>::Public>
+where
+	P: Pair + AppCrypto<Public = <P as Pair>::Public>,
+{
 	let expected_author = slot_author::<P>(slot, authorities);
 	expected_author.and_then(|p| {
-		if keystore.has_keys(&[(p.to_raw_vec(), sp_application_crypto::key_types::AURA)]) {
+		// Use the app-crypto key type so non-standard (e.g. post-quantum) Aura keys are found.
+		if keystore.has_keys(&[(p.to_raw_vec(), <P as AppCrypto>::ID)]) {
 			Some(p.clone())
 		} else {
 			None
@@ -329,6 +333,27 @@ where
 mod tests {
 	use super::*;
 	use sp_keyring::sr25519::Keyring;
+	use sp_keystore::{testing::MemoryKeystore, Keystore};
+
+	mod custom {
+		use sp_application_crypto::{app_crypto, sr25519, KeyTypeId};
+		pub const ID: KeyTypeId = KeyTypeId(*b"cust");
+		app_crypto!(sr25519, ID);
+	}
+
+	#[test]
+	fn claim_slot_uses_app_crypto_key_type() {
+		let keystore: KeystorePtr = std::sync::Arc::new(MemoryKeystore::new());
+		let public =
+			keystore.sr25519_generate_new(custom::ID, None).expect("key generation works");
+		let authorities = vec![custom::Public::from(public)];
+		let claimed = futures::executor::block_on(claim_slot::<custom::Pair>(
+			0.into(),
+			&authorities,
+			&keystore,
+		));
+		assert_eq!(claimed, Some(authorities[0].clone()));
+	}
 
 	#[test]
 	fn authorities_call_works() {

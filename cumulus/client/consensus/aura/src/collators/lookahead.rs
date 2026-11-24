@@ -169,7 +169,7 @@ where
 		+ Send
 		+ Sync
 		+ 'static,
-	Client::Api: AuraApi<Block, P::Public>
+	Client::Api: AuraApi<Block, <P as Pair>::Public>
 		+ CollectCollationInfo<Block>
 		+ AuraUnincludedSegmentApi<Block>
 		+ KeyToIncludeInRelayProof<Block>,
@@ -181,9 +181,9 @@ where
 	Proposer: Environment<Block> + Clone + Send + Sync + 'static,
 	CS: CollatorServiceInterface<Block> + Send + Sync + 'static,
 	CHP: consensus_common::ValidationCodeHashProvider<Block::Hash> + Send + 'static,
-	P: Pair + Send + Sync + 'static,
-	P::Public: AppPublic + Member + Codec,
-	P::Signature: TryFrom<Vec<u8>> + Member + Codec,
+	P: Pair + sp_application_crypto::AppCrypto<Public = <P as Pair>::Public, Signature = <P as Pair>::Signature> + Send + Sync + 'static,
+	<P as Pair>::Public: AppPublic + Member + Codec,
+	<P as Pair>::Signature: TryFrom<Vec<u8>> + Member + Codec,
 {
 	run_with_export::<_, P, _, _, _, _, _, _, _, _>(ParamsWithExport { params, export_pov: None })
 }
@@ -223,7 +223,7 @@ where
 		+ Send
 		+ Sync
 		+ 'static,
-	Client::Api: AuraApi<Block, P::Public>
+	Client::Api: AuraApi<Block, <P as Pair>::Public>
 		+ CollectCollationInfo<Block>
 		+ AuraUnincludedSegmentApi<Block>
 		+ KeyToIncludeInRelayProof<Block>,
@@ -235,9 +235,9 @@ where
 	Proposer: Environment<Block> + Clone + Send + Sync + 'static,
 	CS: CollatorServiceInterface<Block> + Send + Sync + 'static,
 	CHP: consensus_common::ValidationCodeHashProvider<Block::Hash> + Send + 'static,
-	P: Pair + Send + Sync + 'static,
-	P::Public: AppPublic + Member + Codec,
-	P::Signature: TryFrom<Vec<u8>> + Member + Codec,
+	P: Pair + sp_application_crypto::AppCrypto<Public = <P as Pair>::Public, Signature = <P as Pair>::Signature> + Send + Sync + 'static,
+	<P as Pair>::Public: AppPublic + Member + Codec,
+	<P as Pair>::Signature: TryFrom<Vec<u8>> + Member + Codec,
 {
 	async move {
 		cumulus_client_collator::initialize_collator_subsystems(
@@ -333,7 +333,7 @@ where
 			let para_client = &*params.para_client;
 			let keystore = &params.keystore;
 			let can_build_upon = |block_hash| {
-				let (slot_now, relay_slot, timestamp) = get_parachain_slot::<_, _, P::Public>(
+				let (slot_now, relay_slot, timestamp) = get_parachain_slot::<_, _, <P as Pair>::Public>(
 					para_client,
 					block_hash,
 					&relay_parent_header,
@@ -366,7 +366,7 @@ where
 			}
 
 			// Trigger pre-connect to backing groups if necessary.
-			if let Some((slot_now, _relay_slot, _timestamp)) = get_parachain_slot::<_, _, P::Public>(
+			if let Some((slot_now, _relay_slot, _timestamp)) = get_parachain_slot::<_, _, <P as Pair>::Public>(
 				para_client,
 				parent_hash,
 				&relay_parent_header,

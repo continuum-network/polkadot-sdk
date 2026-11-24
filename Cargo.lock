@@ -20078,6 +20078,7 @@ dependencies = [
  "sc-network 0.56.1",
  "sc-network-test",
  "sc-telemetry 30.0.1",
+ "scale-info",
  "sp-api 41.0.0",
  "sp-application-crypto 45.0.0",
  "sp-block-builder",

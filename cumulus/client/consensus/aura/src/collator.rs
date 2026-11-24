@@ -437,14 +437,14 @@ pub async fn claim_slot<B, C, P>(
 	slot_duration: SlotDuration,
 	relay_chain_slot_duration: Duration,
 	keystore: &KeystorePtr,
-) -> Result<Option<SlotClaim<P::Public>>, Box<dyn Error>>
+) -> Result<Option<SlotClaim<<P as Pair>::Public>>, Box<dyn Error>>
 where
 	B: BlockT,
 	C: ProvideRuntimeApi<B> + Send + Sync + 'static,
-	C::Api: AuraApi<B, P::Public>,
-	P: Pair,
-	P::Public: Codec,
-	P::Signature: Codec,
+	C::Api: AuraApi<B, <P as Pair>::Public>,
+	P: Pair + sp_application_crypto::AppCrypto<Public = <P as Pair>::Public, Signature = <P as Pair>::Signature>,
+	<P as Pair>::Public: Codec,
+	<P as Pair>::Signature: Codec,
 {
 	let mut runtime_api = client.runtime_api();
 	runtime_api.set_call_context(sp_core::traits::CallContext::Onchain);
