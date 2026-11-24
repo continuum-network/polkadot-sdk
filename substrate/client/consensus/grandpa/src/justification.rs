@@ -25,10 +25,10 @@ use std::{
 use codec::{Decode, DecodeAll, Encode};
 use finality_grandpa::{voter_set::VoterSet, Error as GrandpaError};
 use sp_blockchain::{Error as ClientError, HeaderBackend};
-use sp_consensus_grandpa::AuthorityId;
+use sp_consensus_grandpa::{AuthorityId, AuthoritySignature, CommitOf, GrandpaJustificationOf};
 use sp_runtime::traits::{Block as BlockT, Header as HeaderT, NumberFor};
 
-use crate::{AuthorityList, Commit, Error};
+use crate::Error;
 
 /// A GRANDPA justification for block finality, it includes a commit message and
 /// an ancestry proof including all headers routing all precommit target blocks
@@ -38,36 +38,49 @@ use crate::{AuthorityList, Commit, Error};
 ///
 /// This is meant to be stored in the db and passed around the network to other
 /// nodes, and are used by syncing nodes to prove authority set handoffs.
-#[derive(Clone, Encode, Decode, PartialEq, Eq, Debug)]
-pub struct GrandpaJustification<Block: BlockT> {
+#[derive(Encode, Decode, PartialEq, Eq, Debug)]
+pub struct GrandpaJustification<Block: BlockT, Id = AuthorityId, Sig = AuthoritySignature> {
 	/// The GRANDPA justification for block finality.
-	pub justification: sp_consensus_grandpa::GrandpaJustification<Block::Header>,
-	_block: PhantomData<Block>,
+	pub justification: GrandpaJustificationOf<Block::Header, Sig, Id>,
+	_block: PhantomData<(Block, Id, Sig)>,
 }
 
-impl<Block: BlockT> From<sp_consensus_grandpa::GrandpaJustification<Block::Header>>
-	for GrandpaJustification<Block>
+impl<Block: BlockT, Id: Clone, Sig: Clone> Clone for GrandpaJustification<Block, Id, Sig> {
+	fn clone(&self) -> Self {
+		Self {
+			justification: self.justification.clone(),
+			_block: PhantomData,
+		}
+	}
+}
+
+impl<Block: BlockT, Id, Sig> From<GrandpaJustificationOf<Block::Header, Sig, Id>>
+	for GrandpaJustification<Block, Id, Sig>
 {
-	fn from(justification: sp_consensus_grandpa::GrandpaJustification<Block::Header>) -> Self {
+	fn from(justification: GrandpaJustificationOf<Block::Header, Sig, Id>) -> Self {
 		Self { justification, _block: Default::default() }
 	}
 }
 
-impl<Block: BlockT> Into<sp_consensus_grandpa::GrandpaJustification<Block::Header>>
-	for GrandpaJustification<Block>
+impl<Block: BlockT, Id, Sig> Into<GrandpaJustificationOf<Block::Header, Sig, Id>>
+	for GrandpaJustification<Block, Id, Sig>
 {
-	fn into(self) -> sp_consensus_grandpa::GrandpaJustification<Block::Header> {
+	fn into(self) -> GrandpaJustificationOf<Block::Header, Sig, Id> {
 		self.justification
 	}
 }
 
-impl<Block: BlockT> GrandpaJustification<Block> {
+impl<Block: BlockT, Id, Sig> GrandpaJustification<Block, Id, Sig>
+where
+	Id: Clone,
+	Sig: Clone,
+{
 	/// Create a GRANDPA justification from the given commit. This method
 	/// assumes the commit is valid and well-formed.
 	pub fn from_commit<C>(
 		client: &Arc<C>,
 		round: u64,
-		commit: Commit<Block::Header>,
+		commit: CommitOf<Block::Header, Sig, Id>,
 	) -> Result<Self, Error>
 	where
 		C: HeaderBackend<Block>,
@@ -122,7 +135,7 @@ impl<Block: BlockT> GrandpaJustification<Block> {
 			}
 		}
 
-		Ok(sp_consensus_grandpa::GrandpaJustification { round, commit, votes_ancestries }.into())
+		Ok(GrandpaJustificationOf { round, commit, votes_ancestries }.into())
 	}
 
 	/// Decode a GRANDPA justification and validate the commit and the votes'
@@ -131,12 +144,14 @@ impl<Block: BlockT> GrandpaJustification<Block> {
 		encoded: &[u8],
 		finalized_target: (Block::Hash, NumberFor<Block>),
 		set_id: u64,
-		voters: &VoterSet<AuthorityId>,
+		voters: &VoterSet<Id>,
 	) -> Result<Self, ClientError>
 	where
 		NumberFor<Block>: finality_grandpa::BlockNumberOps,
+		Id: Clone + Ord + Eq + std::hash::Hash + AsRef<[u8]> + std::fmt::Debug + codec::Decode,
+		Sig: codec::Decode + AsRef<[u8]> + Eq,
 	{
-		let justification = GrandpaJustification::<Block>::decode_all(&mut &*encoded)
+		let justification = GrandpaJustification::<Block, Id, Sig>::decode_all(&mut &*encoded)
 			.map_err(|_| ClientError::JustificationDecode)?;
 
 		if (
@@ -152,9 +167,11 @@ impl<Block: BlockT> GrandpaJustification<Block> {
 	}
 
 	/// Validate the commit and the votes' ancestry proofs.
-	pub fn verify(&self, set_id: u64, authorities: &AuthorityList) -> Result<(), ClientError>
+	pub fn verify(&self, set_id: u64, authorities: &[(Id, u64)]) -> Result<(), ClientError>
 	where
 		NumberFor<Block>: finality_grandpa::BlockNumberOps,
+		Id: Clone + Ord + Eq + std::hash::Hash + AsRef<[u8]> + std::fmt::Debug,
+		Sig: AsRef<[u8]> + Eq,
 	{
 		let voters = VoterSet::new(authorities.iter().cloned())
 			.ok_or(ClientError::Consensus(sp_consensus::Error::InvalidAuthoritiesSet))?;
@@ -166,10 +183,12 @@ impl<Block: BlockT> GrandpaJustification<Block> {
 	pub(crate) fn verify_with_voter_set(
 		&self,
 		set_id: u64,
-		voters: &VoterSet<AuthorityId>,
+		voters: &VoterSet<Id>,
 	) -> Result<(), ClientError>
 	where
 		NumberFor<Block>: finality_grandpa::BlockNumberOps,
+		Id: Clone + Ord + Eq + std::hash::Hash + AsRef<[u8]> + std::fmt::Debug,
+		Sig: AsRef<[u8]> + Eq,
 	{
 		use finality_grandpa::Chain;
 
@@ -205,10 +224,10 @@ impl<Block: BlockT> GrandpaJustification<Block> {
 		let mut buf = Vec::new();
 		let mut visited_hashes = HashSet::new();
 		for signed in self.justification.commit.precommits.iter() {
-			let signature_result = sp_consensus_grandpa::check_message_signature_with_buffer(
+			let signature_result = sp_consensus_grandpa::check_message_signature_hybrid_with_buffer(
 				&finality_grandpa::Message::Precommit(signed.precommit.clone()),
-				&signed.id,
-				&signed.signature,
+				signed.id.as_ref(),
+				signed.signature.as_ref(),
 				self.justification.round,
 				set_id,
 				&mut buf,

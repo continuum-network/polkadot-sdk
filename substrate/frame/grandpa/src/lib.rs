@@ -32,11 +32,11 @@ extern crate alloc;
 
 // Re-export since this is necessary for `impl_apis` in runtime.
 pub use sp_consensus_grandpa::{
-	self as fg_primitives, AuthorityId, AuthorityList, AuthorityWeight,
+	self as fg_primitives, AuthorityId, AuthorityList, AuthoritySignature, AuthorityWeight,
 };
 
 use alloc::{boxed::Box, vec::Vec};
-use codec::{Decode, Encode, MaxEncodedLen};
+use codec::{self as codec, Decode, Encode, MaxEncodedLen};
 use frame_support::{
 	dispatch::{DispatchResultWithPostInfo, Pays},
 	pallet_prelude::Get,
@@ -47,10 +47,14 @@ use frame_support::{
 use frame_system::pallet_prelude::BlockNumberFor;
 use scale_info::TypeInfo;
 use sp_consensus_grandpa::{
-	ConsensusLog, EquivocationProof, ScheduledChange, SetId, GRANDPA_ENGINE_ID,
+	ConsensusLogOf, EquivocationProofOf, ScheduledChangeOf, SetId, GRANDPA_ENGINE_ID,
 	RUNTIME_LOG_TARGET as LOG_TARGET,
 };
-use sp_runtime::{generic::DigestItem, traits::Zero, DispatchResult};
+use sp_runtime::{
+	generic::DigestItem,
+	traits::{MaybeSerializeDeserialize, Zero},
+	DispatchResult,
+};
 use sp_session::{GetSessionNumber, GetValidatorCount};
 use sp_staking::{offence::OffenceReportSystem, SessionIndex};
 
@@ -86,7 +90,7 @@ pub mod pallet {
 	pub trait Config: frame_system::Config {
 		/// The event type of this module.
 		#[allow(deprecated)]
-		type RuntimeEvent: From<Event>
+		type RuntimeEvent: From<Event<Self>>
 			+ Into<<Self as frame_system::Config>::RuntimeEvent>
 			+ IsType<<Self as frame_system::Config>::RuntimeEvent>;
 
@@ -120,8 +124,26 @@ pub mod pallet {
 		/// (from an offchain context).
 		type EquivocationReportSystem: OffenceReportSystem<
 			Option<Self::AccountId>,
-			(EquivocationProof<Self::Hash, BlockNumberFor<Self>>, Self::KeyOwnerProof),
+			(EquivocationProofOf<Self::Hash, BlockNumberFor<Self>, Self::AuthorityId, Self::AuthoritySignature>, Self::KeyOwnerProof),
 		>;
+
+		/// The GRANDPA authority identifier type. Default is Ed25519, can be configured for
+		/// post-quantum schemes like Dilithium.
+		type AuthorityId: Member
+			+ Parameter
+			+ sp_runtime::RuntimeAppPublic<Signature = Self::AuthoritySignature>
+			+ sp_core::crypto::ByteArray
+			+ core::fmt::Debug
+			+ MaybeSerializeDeserialize
+			+ MaxEncodedLen;
+
+		/// The GRANDPA authority signature type corresponding to AuthorityId.
+		type AuthoritySignature: Member
+			+ Parameter
+			+ codec::Codec
+			+ Clone
+			+ codec::Decode
+			+ sp_core::crypto::ByteArray;
 	}
 
 	#[pallet::hooks]
@@ -133,15 +155,17 @@ pub mod pallet {
 				if block_number == pending_change.scheduled_at {
 					let next_authorities = pending_change.next_authorities.to_vec();
 					if let Some(median) = pending_change.forced {
-						Self::deposit_log(ConsensusLog::ForcedChange(
+						Self::deposit_log(ConsensusLogOf::<_, T::AuthorityId>::ForcedChange(
 							median,
-							ScheduledChange { delay: pending_change.delay, next_authorities },
+							ScheduledChangeOf { delay: pending_change.delay, next_authorities },
 						))
 					} else {
-						Self::deposit_log(ConsensusLog::ScheduledChange(ScheduledChange {
-							delay: pending_change.delay,
-							next_authorities,
-						}));
+						Self::deposit_log(ConsensusLogOf::<_, T::AuthorityId>::ScheduledChange(
+							ScheduledChangeOf {
+								delay: pending_change.delay,
+								next_authorities,
+							},
+						));
 					}
 				}
 
@@ -160,7 +184,7 @@ pub mod pallet {
 				StoredState::PendingPause { scheduled_at, delay } => {
 					// signal change to pause
 					if block_number == scheduled_at {
-						Self::deposit_log(ConsensusLog::Pause(delay));
+						Self::deposit_log(ConsensusLogOf::<_, T::AuthorityId>::Pause(delay));
 					}
 
 					// enact change to paused state
@@ -172,7 +196,7 @@ pub mod pallet {
 				StoredState::PendingResume { scheduled_at, delay } => {
 					// signal change to resume
 					if block_number == scheduled_at {
-						Self::deposit_log(ConsensusLog::Resume(delay));
+						Self::deposit_log(ConsensusLogOf::<_, T::AuthorityId>::Resume(delay));
 					}
 
 					// enact change to live state
@@ -199,7 +223,7 @@ pub mod pallet {
 		))]
 		pub fn report_equivocation(
 			origin: OriginFor<T>,
-			equivocation_proof: Box<EquivocationProof<T::Hash, BlockNumberFor<T>>>,
+			equivocation_proof: Box<EquivocationProofOf<T::Hash, BlockNumberFor<T>, T::AuthorityId, T::AuthoritySignature>>,
 			key_owner_proof: T::KeyOwnerProof,
 		) -> DispatchResultWithPostInfo {
 			let reporter = ensure_signed(origin)?;
@@ -228,7 +252,7 @@ pub mod pallet {
 		))]
 		pub fn report_equivocation_unsigned(
 			origin: OriginFor<T>,
-			equivocation_proof: Box<EquivocationProof<T::Hash, BlockNumberFor<T>>>,
+			equivocation_proof: Box<EquivocationProofOf<T::Hash, BlockNumberFor<T>, T::AuthorityId, T::AuthoritySignature>>,
 			key_owner_proof: T::KeyOwnerProof,
 		) -> DispatchResultWithPostInfo {
 			ensure_none(origin)?;
@@ -268,9 +292,9 @@ pub mod pallet {
 
 	#[pallet::event]
 	#[pallet::generate_deposit(fn deposit_event)]
-	pub enum Event {
+	pub enum Event<T: Config> {
 		/// New authority set has been applied.
-		NewAuthorities { authority_set: AuthorityList },
+		NewAuthorities { authority_set: AuthorityListOf<T> },
 		/// Current authority set has been paused.
 		Paused,
 		/// Current authority set has been resumed.
@@ -310,7 +334,7 @@ pub mod pallet {
 	/// Pending change: (signaled at, scheduled change).
 	#[pallet::storage]
 	pub type PendingChange<T: Config> =
-		StorageValue<_, StoredPendingChange<BlockNumberFor<T>, T::MaxAuthorities>>;
+		StorageValue<_, StoredPendingChangeOf<BlockNumberFor<T>, T>>;
 
 	/// next block number where we can force a change.
 	#[pallet::storage]
@@ -340,13 +364,12 @@ pub mod pallet {
 
 	/// The current list of authorities.
 	#[pallet::storage]
-	pub type Authorities<T: Config> =
-		StorageValue<_, BoundedAuthorityList<T::MaxAuthorities>, ValueQuery>;
+	pub type Authorities<T: Config> = StorageValue<_, BoundedAuthorityListOf<T>, ValueQuery>;
 
 	#[derive(frame_support::DefaultNoBound)]
 	#[pallet::genesis_config]
 	pub struct GenesisConfig<T: Config> {
-		pub authorities: AuthorityList,
+		pub authorities: AuthorityListOf<T>,
 		#[serde(skip)]
 		pub _config: core::marker::PhantomData<T>,
 	}
@@ -379,9 +402,33 @@ pub trait WeightInfo {
 }
 
 /// Bounded version of `AuthorityList`, `Limit` being the bound
+/// Now generic over the authority ID type.
+pub type BoundedAuthorityListOf<T> =
+	WeakBoundedVec<(<T as Config>::AuthorityId, AuthorityWeight), <T as Config>::MaxAuthorities>;
+
+/// Authority list for this pallet's configuration
+pub type AuthorityListOf<T> = Vec<(<T as Config>::AuthorityId, AuthorityWeight)>;
+
+/// Legacy type alias for backward compatibility (uses default Ed25519 AuthorityId)
 pub type BoundedAuthorityList<Limit> = WeakBoundedVec<(AuthorityId, AuthorityWeight), Limit>;
 
-/// A stored pending change.
+/// A stored pending change - generic version for configurable AuthorityId.
+#[derive(Encode, Decode, TypeInfo, MaxEncodedLen)]
+#[codec(mel_bound(N: MaxEncodedLen))]
+#[scale_info(skip_type_params(T))]
+pub struct StoredPendingChangeOf<N, T: Config> {
+	/// The block number this was scheduled at.
+	pub scheduled_at: N,
+	/// The delay in blocks until it will be applied.
+	pub delay: N,
+	/// The next authority set.
+	pub next_authorities: BoundedAuthorityListOf<T>,
+	/// If defined it means the change was forced and the given block number
+	/// indicates the median last finalized block when the change was signaled.
+	pub forced: Option<N>,
+}
+
+/// A stored pending change (legacy version for backward compatibility).
 /// `Limit` is the bound for `next_authorities`
 #[derive(Encode, Decode, TypeInfo, MaxEncodedLen)]
 #[codec(mel_bound(N: MaxEncodedLen, Limit: Get<u32>))]
@@ -433,7 +480,7 @@ impl<T: Config> Pallet<T> {
 	}
 
 	/// Pending change: (signaled at, scheduled change).
-	pub fn pending_change() -> Option<StoredPendingChange<BlockNumberFor<T>, T::MaxAuthorities>> {
+	pub fn pending_change() -> Option<StoredPendingChangeOf<BlockNumberFor<T>, T>> {
 		PendingChange::<T>::get()
 	}
 
@@ -466,7 +513,7 @@ impl<T: Config> Pallet<T> {
 	}
 
 	/// Get the current set of authorities, along with their respective weights.
-	pub fn grandpa_authorities() -> AuthorityList {
+	pub fn grandpa_authorities() -> AuthorityListOf<T> {
 		Authorities::<T>::get().into_inner()
 	}
 
@@ -510,7 +557,7 @@ impl<T: Config> Pallet<T> {
 	/// No change should be signaled while any change is pending. Returns
 	/// an error if a change is already pending.
 	pub fn schedule_change(
-		next_authorities: AuthorityList,
+		next_authorities: AuthorityListOf<T>,
 		in_blocks: BlockNumberFor<T>,
 		forced: Option<BlockNumberFor<T>>,
 	) -> DispatchResult {
@@ -535,7 +582,7 @@ impl<T: Config> Pallet<T> {
 				),
 			);
 
-			PendingChange::<T>::put(StoredPendingChange {
+			PendingChange::<T>::put(StoredPendingChangeOf {
 				delay: in_blocks,
 				scheduled_at,
 				next_authorities,
@@ -548,19 +595,58 @@ impl<T: Config> Pallet<T> {
 		}
 	}
 
+	/// Schedule an authority-set change **and** increment [`CurrentSetId`], mirroring the
+	/// set-id bump that [`OneSessionHandler::on_new_session`] performs when it successfully
+	/// schedules a change.
+	///
+	/// Bare [`Self::schedule_change`] only writes `PendingChange`; the session handler is what
+	/// normally advances `CurrentSetId`. Callers that schedule a change *outside* a session
+	/// rotation (e.g. Continuum Phase 9.6 mid-session governance cutover) must use this helper
+	/// so runtime `current_set_id()` stays aligned with the GRANDPA client's `set_id` after
+	/// the digest is applied. Warp sync rehydrates the voter from the runtime API; a stale
+	/// `CurrentSetId` leaves late nodes listening on the wrong gossip topic and stuck at the
+	/// warp finalized tip.
+	///
+	/// `session_index` is recorded in [`SetIdSession`] for the new set id (equivocation
+	/// key-ownership proofs), matching `on_new_session`.
+	///
+	/// Does **not** replace `schedule_change` for `on_new_session` — that path already bumps
+	/// the set id itself and must not double-increment.
+	pub fn schedule_change_incrementing_set_id(
+		next_authorities: AuthorityListOf<T>,
+		in_blocks: BlockNumberFor<T>,
+		forced: Option<BlockNumberFor<T>>,
+		session_index: SessionIndex,
+	) -> DispatchResult {
+		Self::schedule_change(next_authorities, in_blocks, forced)?;
+
+		let current_set_id = CurrentSetId::<T>::mutate(|s| {
+			*s += 1;
+			*s
+		});
+
+		let max_set_id_session_entries = T::MaxSetIdSessionEntries::get().max(1);
+		if current_set_id >= max_set_id_session_entries {
+			SetIdSession::<T>::remove(current_set_id - max_set_id_session_entries);
+		}
+		SetIdSession::<T>::insert(current_set_id, session_index);
+
+		Ok(())
+	}
+
 	/// Deposit one of this module's logs.
-	fn deposit_log(log: ConsensusLog<BlockNumberFor<T>>) {
+	fn deposit_log(log: ConsensusLogOf<BlockNumberFor<T>, T::AuthorityId>) {
 		let log = DigestItem::Consensus(GRANDPA_ENGINE_ID, log.encode());
 		frame_system::Pallet::<T>::deposit_log(log);
 	}
 
 	// Perform module initialization, abstracted so that it can be called either through genesis
 	// config builder or through `on_genesis_session`.
-	fn initialize(authorities: AuthorityList) {
+	fn initialize(authorities: AuthorityListOf<T>) {
 		if !authorities.is_empty() {
 			assert!(Self::grandpa_authorities().is_empty(), "Authorities are already initialized!");
 			Authorities::<T>::put(
-				&BoundedAuthorityList::<T::MaxAuthorities>::try_from(authorities).expect(
+				&BoundedAuthorityListOf::<T>::try_from(authorities).expect(
 					"Grandpa: `Config::MaxAuthorities` is smaller than the number of genesis authorities!",
 				),
 			);
@@ -577,7 +663,7 @@ impl<T: Config> Pallet<T> {
 	/// will push the transaction to the pool. Only useful in an offchain
 	/// context.
 	pub fn submit_unsigned_equivocation_report(
-		equivocation_proof: EquivocationProof<T::Hash, BlockNumberFor<T>>,
+		equivocation_proof: EquivocationProofOf<T::Hash, BlockNumberFor<T>, T::AuthorityId, T::AuthoritySignature>,
 		key_owner_proof: T::KeyOwnerProof,
 	) -> Option<()> {
 		T::EquivocationReportSystem::publish_evidence((equivocation_proof, key_owner_proof)).ok()
@@ -592,18 +678,18 @@ impl<T: Config> Pallet<T> {
 }
 
 impl<T: Config> sp_runtime::BoundToRuntimeAppPublic for Pallet<T> {
-	type Public = AuthorityId;
+	type Public = T::AuthorityId;
 }
 
 impl<T: Config> OneSessionHandler<T::AccountId> for Pallet<T>
 where
 	T: pallet_session::Config,
 {
-	type Key = AuthorityId;
+	type Key = T::AuthorityId;
 
 	fn on_genesis_session<'a, I: 'a>(validators: I)
 	where
-		I: Iterator<Item = (&'a T::AccountId, AuthorityId)>,
+		I: Iterator<Item = (&'a T::AccountId, T::AuthorityId)>,
 	{
 		let authorities = validators.map(|(_, k)| (k, 1)).collect::<Vec<_>>();
 		Self::initialize(authorities);
@@ -611,7 +697,7 @@ where
 
 	fn on_new_session<'a, I: 'a>(changed: bool, validators: I, _queued_validators: I)
 	where
-		I: Iterator<Item = (&'a T::AccountId, AuthorityId)>,
+		I: Iterator<Item = (&'a T::AccountId, T::AuthorityId)>,
 	{
 		let mut current_set_id = CurrentSetId::<T>::get();
 
@@ -648,6 +734,6 @@ where
 	}
 
 	fn on_disabled(i: u32) {
-		Self::deposit_log(ConsensusLog::OnDisabled(i as u64))
+		Self::deposit_log(ConsensusLogOf::<_, T::AuthorityId>::OnDisabled(i as u64))
 	}
 }

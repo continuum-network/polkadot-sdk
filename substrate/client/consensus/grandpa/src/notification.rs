@@ -16,6 +16,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
+use sp_consensus_grandpa::{AuthorityId, AuthoritySignature};
 use sc_utils::notification::{NotificationSender, NotificationStream, TracingKeyStr};
 
 use crate::justification::GrandpaJustification;
@@ -24,7 +25,7 @@ use crate::justification::GrandpaJustification;
 ///
 /// Used to send notifications about justifications generated
 /// at the end of a Grandpa round.
-pub type GrandpaJustificationSender<Block> = NotificationSender<GrandpaJustification<Block>>;
+pub type GrandpaJustificationSender<Block, Id = AuthorityId, Sig = AuthoritySignature> = NotificationSender<GrandpaJustification<Block, Id, Sig>>;
 
 /// The receiving half of the Grandpa justification channel.
 ///
@@ -32,8 +33,8 @@ pub type GrandpaJustificationSender<Block> = NotificationSender<GrandpaJustifica
 /// at the end of a Grandpa round.
 /// The `GrandpaJustificationStream` entity stores the `SharedJustificationSenders`
 /// so it can be used to add more subscriptions.
-pub type GrandpaJustificationStream<Block> =
-	NotificationStream<GrandpaJustification<Block>, GrandpaJustificationsTracingKey>;
+pub type GrandpaJustificationStream<Block, Id = AuthorityId, Sig = AuthoritySignature> =
+	NotificationStream<GrandpaJustification<Block, Id, Sig>, GrandpaJustificationsTracingKey>;
 
 /// Provides tracing key for GRANDPA justifications stream.
 #[derive(Clone)]

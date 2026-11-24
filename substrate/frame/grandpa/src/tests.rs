@@ -21,7 +21,7 @@
 
 use super::{Call, Event, *};
 use crate::mock::*;
-use fg_primitives::ScheduledChange;
+use fg_primitives::{ConsensusLog, ScheduledChange};
 use frame_support::{
 	assert_err, assert_noop, assert_ok,
 	dispatch::{GetDispatchInfo, Pays},
@@ -101,6 +101,43 @@ fn authorities_change_logged_after_delay() {
 				.into(),
 				topics: vec![],
 			},]
+		);
+	});
+}
+
+#[test]
+fn schedule_change_incrementing_set_id_bumps_set_id() {
+	new_test_ext(vec![(1, 1), (2, 1), (3, 1)]).execute_with(|| {
+		initialize_block(1, Default::default());
+		let set_id_before = CurrentSetId::<Test>::get();
+		let next = to_authorities(vec![(4, 1), (5, 1), (6, 1)]);
+
+		assert_ok!(Grandpa::schedule_change_incrementing_set_id(next.clone(), 0, None, 7));
+		assert!(PendingChange::<Test>::exists());
+		assert_eq!(CurrentSetId::<Test>::get(), set_id_before + 1);
+		assert_eq!(SetIdSession::<Test>::get(set_id_before + 1), Some(7));
+
+		// a second change cannot be scheduled while one is pending, and the set id is untouched.
+		assert_noop!(
+			Grandpa::schedule_change_incrementing_set_id(to_authorities(vec![(5, 1)]), 0, None, 8),
+			Error::<Test>::ChangePending
+		);
+
+		Grandpa::on_finalize(1);
+		let header = System::finalize();
+
+		// the pending change is applied at the end of the block.
+		assert!(!PendingChange::<Test>::exists());
+		assert_eq!(Grandpa::grandpa_authorities(), next);
+		assert_eq!(CurrentSetId::<Test>::get(), set_id_before + 1);
+		assert_eq!(
+			header.digest,
+			Digest {
+				logs: vec![grandpa_log(ConsensusLog::ScheduledChange(ScheduledChange {
+					delay: 0,
+					next_authorities: next,
+				}))],
+			}
 		);
 	});
 }

@@ -27,12 +27,12 @@ use log::{info, warn};
 use fork_tree::ForkTree;
 use sc_client_api::backend::AuxStore;
 use sp_blockchain::{Error as ClientError, Result as ClientResult};
-use sp_consensus_grandpa::{AuthorityList, RoundNumber, SetId};
+use sp_consensus_grandpa::{AuthorityId, AuthorityListOf, AuthoritySignature, RoundNumber, SetId};
 use sp_runtime::traits::{Block as BlockT, NumberFor};
 
 use crate::{
 	authorities::{
-		AuthoritySet, AuthoritySetChanges, DelayKind, PendingChange, SharedAuthoritySet,
+		AuthorityIdBounds, AuthoritySet, AuthoritySetChanges, DelayKind, PendingChange, SharedAuthoritySet,
 	},
 	environment::{
 		CompletedRound, CompletedRounds, CurrentRounds, HasVoted, SharedVoterSetState,
@@ -62,26 +62,26 @@ pub enum V1VoterSetState<H, N> {
 type V0VoterSetState<H, N> = (RoundNumber, RoundState<H, N>);
 
 #[derive(Debug, Clone, Encode, Decode, PartialEq)]
-struct V0PendingChange<H, N> {
-	next_authorities: AuthorityList,
+struct V0PendingChange<H, N, Id = AuthorityId> {
+	next_authorities: AuthorityListOf<Id>,
 	delay: N,
 	canon_height: N,
 	canon_hash: H,
 }
 
 #[derive(Debug, Clone, Encode, Decode, PartialEq)]
-struct V0AuthoritySet<H, N> {
-	current_authorities: AuthorityList,
+struct V0AuthoritySet<H, N, Id = AuthorityId> {
+	current_authorities: AuthorityListOf<Id>,
 	set_id: SetId,
-	pending_changes: Vec<V0PendingChange<H, N>>,
+	pending_changes: Vec<V0PendingChange<H, N, Id>>,
 }
 
-impl<H, N> Into<AuthoritySet<H, N>> for V0AuthoritySet<H, N>
+impl<H, N, Id: AuthorityIdBounds> Into<AuthoritySet<H, N, Id>> for V0AuthoritySet<H, N, Id>
 where
 	H: Clone + Debug + PartialEq,
 	N: Clone + Debug + Ord,
 {
-	fn into(self) -> AuthoritySet<H, N> {
+	fn into(self) -> AuthoritySet<H, N, Id> {
 		let mut pending_standard_changes = ForkTree::new();
 
 		for old_change in self.pending_changes {
@@ -117,12 +117,12 @@ where
 	}
 }
 
-impl<H, N> Into<AuthoritySet<H, N>> for V2AuthoritySet<H, N>
+impl<H, N, Id: AuthorityIdBounds> Into<AuthoritySet<H, N, Id>> for V2AuthoritySet<H, N, Id>
 where
 	H: Clone + Debug + PartialEq,
 	N: Clone + Debug + Ord,
 {
-	fn into(self) -> AuthoritySet<H, N> {
+	fn into(self) -> AuthoritySet<H, N, Id> {
 		AuthoritySet::new(
 			self.current_authorities,
 			self.set_id,
@@ -135,11 +135,11 @@ where
 }
 
 #[derive(Debug, Clone, Encode, Decode, PartialEq)]
-struct V2AuthoritySet<H, N> {
-	current_authorities: AuthorityList,
+struct V2AuthoritySet<H, N, Id = AuthorityId> {
+	current_authorities: AuthorityListOf<Id>,
 	set_id: u64,
-	pending_standard_changes: ForkTree<H, N, PendingChange<H, N>>,
-	pending_forced_changes: Vec<PendingChange<H, N>>,
+	pending_standard_changes: ForkTree<H, N, PendingChange<H, N, Id>>,
+	pending_forced_changes: Vec<PendingChange<H, N, Id>>,
 }
 
 pub(crate) fn load_decode<B: AuxStore, T: Decode>(
@@ -155,25 +155,29 @@ pub(crate) fn load_decode<B: AuxStore, T: Decode>(
 }
 
 /// Persistent data kept between runs.
-pub(crate) struct PersistentData<Block: BlockT> {
-	pub(crate) authority_set: SharedAuthoritySet<Block::Hash, NumberFor<Block>>,
-	pub(crate) set_state: SharedVoterSetState<Block>,
+pub(crate) struct PersistentData<Block: BlockT, Id = AuthorityId, Sig = AuthoritySignature> {
+	pub(crate) authority_set: SharedAuthoritySet<Block::Hash, NumberFor<Block>, Id>,
+	pub(crate) set_state: SharedVoterSetState<Block, Id, Sig>,
 }
 
-fn migrate_from_version0<Block: BlockT, B, G>(
+fn migrate_from_version0<Block: BlockT, B, G, Id, Sig>(
 	backend: &B,
 	genesis_round: &G,
-) -> ClientResult<Option<(AuthoritySet<Block::Hash, NumberFor<Block>>, VoterSetState<Block>)>>
+) -> ClientResult<
+	Option<(AuthoritySet<Block::Hash, NumberFor<Block>, Id>, VoterSetState<Block, Id, Sig>)>,
+>
 where
 	B: AuxStore,
 	G: Fn() -> RoundState<Block::Hash, NumberFor<Block>>,
+	Id: AuthorityIdBounds,
+	Sig: sp_consensus_grandpa::AuthoritySignatureBounds,
 {
 	CURRENT_VERSION.using_encoded(|s| backend.insert_aux(&[(VERSION_KEY, s)], &[]))?;
 
 	if let Some(old_set) =
-		load_decode::<_, V0AuthoritySet<Block::Hash, NumberFor<Block>>>(backend, AUTHORITY_SET_KEY)?
+		load_decode::<_, V0AuthoritySet<Block::Hash, NumberFor<Block>, Id>>(backend, AUTHORITY_SET_KEY)?
 	{
-		let new_set: AuthoritySet<Block::Hash, NumberFor<Block>> = old_set.into();
+		let new_set: AuthoritySet<Block::Hash, NumberFor<Block>, Id> = old_set.into();
 		backend.insert_aux(&[(AUTHORITY_SET_KEY, new_set.encode().as_slice())], &[])?;
 
 		let (last_round_number, last_round_state) = match load_decode::<
@@ -191,7 +195,7 @@ where
 			"state is for completed round; completed rounds must have a prevote ghost; qed.",
 		);
 
-		let mut current_rounds = CurrentRounds::<Block>::new();
+		let mut current_rounds = CurrentRounds::<Block, Id>::new();
 		current_rounds.insert(last_round_number + 1, HasVoted::No);
 
 		let set_state = VoterSetState::Live {
@@ -216,18 +220,22 @@ where
 	Ok(None)
 }
 
-fn migrate_from_version1<Block: BlockT, B, G>(
+fn migrate_from_version1<Block: BlockT, B, G, Id, Sig>(
 	backend: &B,
 	genesis_round: &G,
-) -> ClientResult<Option<(AuthoritySet<Block::Hash, NumberFor<Block>>, VoterSetState<Block>)>>
+) -> ClientResult<
+	Option<(AuthoritySet<Block::Hash, NumberFor<Block>, Id>, VoterSetState<Block, Id, Sig>)>,
+>
 where
 	B: AuxStore,
 	G: Fn() -> RoundState<Block::Hash, NumberFor<Block>>,
+	Id: AuthorityIdBounds,
+	Sig: sp_consensus_grandpa::AuthoritySignatureBounds,
 {
 	CURRENT_VERSION.using_encoded(|s| backend.insert_aux(&[(VERSION_KEY, s)], &[]))?;
 
 	if let Some(set) =
-		load_decode::<_, AuthoritySet<Block::Hash, NumberFor<Block>>>(backend, AUTHORITY_SET_KEY)?
+		load_decode::<_, AuthoritySet<Block::Hash, NumberFor<Block>, Id>>(backend, AUTHORITY_SET_KEY)?
 	{
 		let set_id = set.set_id;
 
@@ -255,7 +263,7 @@ where
 				let base = set_state.prevote_ghost
 					.expect("state is for completed round; completed rounds must have a prevote ghost; qed.");
 
-				let mut current_rounds = CurrentRounds::<Block>::new();
+				let mut current_rounds = CurrentRounds::<Block, Id>::new();
 				current_rounds.insert(last_round_number + 1, HasVoted::No);
 
 				VoterSetState::Live {
@@ -280,23 +288,27 @@ where
 	Ok(None)
 }
 
-fn migrate_from_version2<Block: BlockT, B, G>(
+fn migrate_from_version2<Block: BlockT, B, G, Id, Sig>(
 	backend: &B,
 	genesis_round: &G,
-) -> ClientResult<Option<(AuthoritySet<Block::Hash, NumberFor<Block>>, VoterSetState<Block>)>>
+) -> ClientResult<
+	Option<(AuthoritySet<Block::Hash, NumberFor<Block>, Id>, VoterSetState<Block, Id, Sig>)>,
+>
 where
 	B: AuxStore,
 	G: Fn() -> RoundState<Block::Hash, NumberFor<Block>>,
+	Id: AuthorityIdBounds,
+	Sig: sp_consensus_grandpa::AuthoritySignatureBounds,
 {
 	CURRENT_VERSION.using_encoded(|s| backend.insert_aux(&[(VERSION_KEY, s)], &[]))?;
 
 	if let Some(old_set) =
-		load_decode::<_, V2AuthoritySet<Block::Hash, NumberFor<Block>>>(backend, AUTHORITY_SET_KEY)?
+		load_decode::<_, V2AuthoritySet<Block::Hash, NumberFor<Block>, Id>>(backend, AUTHORITY_SET_KEY)?
 	{
-		let new_set: AuthoritySet<Block::Hash, NumberFor<Block>> = old_set.into();
+		let new_set: AuthoritySet<Block::Hash, NumberFor<Block>, Id> = old_set.into();
 		backend.insert_aux(&[(AUTHORITY_SET_KEY, new_set.encode().as_slice())], &[])?;
 
-		let set_state = match load_decode::<_, VoterSetState<Block>>(backend, SET_STATE_KEY)? {
+		let set_state = match load_decode::<_, VoterSetState<Block, Id, Sig>>(backend, SET_STATE_KEY)? {
 			Some(state) => state,
 			None => {
 				let state = genesis_round();
@@ -314,15 +326,17 @@ where
 }
 
 /// Load or initialize persistent data from backend.
-pub(crate) fn load_persistent<Block: BlockT, B, G>(
+pub(crate) fn load_persistent<Block: BlockT, B, G, Id, Sig>(
 	backend: &B,
 	genesis_hash: Block::Hash,
 	genesis_number: NumberFor<Block>,
 	genesis_authorities: G,
-) -> ClientResult<PersistentData<Block>>
+) -> ClientResult<PersistentData<Block, Id, Sig>>
 where
 	B: AuxStore,
-	G: FnOnce() -> ClientResult<AuthorityList>,
+	G: FnOnce() -> ClientResult<AuthorityListOf<Id>>,
+	Id: AuthorityIdBounds + Decode + Encode,
+	Sig: sp_consensus_grandpa::AuthoritySignatureBounds + Decode + Encode,
 {
 	let version: Option<u32> = load_decode(backend, VERSION_KEY)?;
 
@@ -331,7 +345,7 @@ where
 	match version {
 		None => {
 			if let Some((new_set, set_state)) =
-				migrate_from_version0::<Block, _, _>(backend, &make_genesis_round)?
+				migrate_from_version0::<Block, _, _, Id, Sig>(backend, &make_genesis_round)?
 			{
 				return Ok(PersistentData {
 					authority_set: new_set.into(),
@@ -341,7 +355,7 @@ where
 		},
 		Some(1) => {
 			if let Some((new_set, set_state)) =
-				migrate_from_version1::<Block, _, _>(backend, &make_genesis_round)?
+				migrate_from_version1::<Block, _, _, Id, Sig>(backend, &make_genesis_round)?
 			{
 				return Ok(PersistentData {
 					authority_set: new_set.into(),
@@ -351,7 +365,7 @@ where
 		},
 		Some(2) => {
 			if let Some((new_set, set_state)) =
-				migrate_from_version2::<Block, _, _>(backend, &make_genesis_round)?
+				migrate_from_version2::<Block, _, _, Id, Sig>(backend, &make_genesis_round)?
 			{
 				return Ok(PersistentData {
 					authority_set: new_set.into(),
@@ -360,19 +374,19 @@ where
 			}
 		},
 		Some(3) => {
-			if let Some(set) = load_decode::<_, AuthoritySet<Block::Hash, NumberFor<Block>>>(
+			if let Some(set) = load_decode::<_, AuthoritySet<Block::Hash, NumberFor<Block>, Id>>(
 				backend,
 				AUTHORITY_SET_KEY,
 			)? {
 				let set_state =
-					match load_decode::<_, VoterSetState<Block>>(backend, SET_STATE_KEY)? {
+					match load_decode::<_, VoterSetState<Block, Id, Sig>>(backend, SET_STATE_KEY)? {
 						Some(state) => state,
 						None => {
 							let state = make_genesis_round();
 							let base = state.prevote_ghost
 							.expect("state is for completed round; completed rounds must have a prevote ghost; qed.");
 
-							VoterSetState::live(set.set_id, &set, base)
+							VoterSetState::<Block, Id, Sig>::live(set.set_id, &set, base)
 						},
 					};
 
@@ -405,7 +419,7 @@ where
 		.prevote_ghost
 		.expect("state is for completed round; completed rounds must have a prevote ghost; qed.");
 
-	let genesis_state = VoterSetState::live(0, &genesis_set, base);
+	let genesis_state = VoterSetState::<Block, Id, Sig>::live(0, &genesis_set, base);
 
 	backend.insert_aux(
 		&[
@@ -423,13 +437,14 @@ where
 /// If there has just been a handoff, pass a `new_set` parameter that describes the
 /// handoff. `set` in all cases should reflect the current authority set, with all
 /// changes and handoffs applied.
-pub(crate) fn update_authority_set<Block: BlockT, F, R>(
-	set: &AuthoritySet<Block::Hash, NumberFor<Block>>,
-	new_set: Option<&NewAuthoritySet<Block::Hash, NumberFor<Block>>>,
+pub(crate) fn update_authority_set<Block: BlockT, F, R, Id>(
+	set: &AuthoritySet<Block::Hash, NumberFor<Block>, Id>,
+	new_set: Option<&NewAuthoritySet<Block::Hash, NumberFor<Block>, Id>>,
 	write_aux: F,
 ) -> R
 where
 	F: FnOnce(&[(&'static [u8], &[u8])]) -> R,
+	Id: AuthorityIdBounds + codec::Encode,
 {
 	// write new authority set state to disk.
 	let encoded_set = set.encode();
@@ -438,7 +453,7 @@ where
 		// we also overwrite the "last completed round" entry with a blank slate
 		// because from the perspective of the finality gadget, the chain has
 		// reset.
-		let set_state = VoterSetState::<Block>::live(
+		let set_state = VoterSetState::<Block, Id>::live(
 			new_set.set_id,
 			set,
 			(new_set.canon_hash, new_set.canon_number),
@@ -456,41 +471,55 @@ where
 /// We always keep around the justification for the best finalized block and overwrite it
 /// as we finalize new blocks, this makes sure that we don't store useless justifications
 /// but can always prove finality of the latest block.
-pub(crate) fn update_best_justification<Block: BlockT, F, R>(
-	justification: &GrandpaJustification<Block>,
+pub(crate) fn update_best_justification<Block: BlockT, Id, Sig, F, R>(
+	justification: &GrandpaJustification<Block, Id, Sig>,
 	write_aux: F,
 ) -> R
 where
 	F: FnOnce(&[(&'static [u8], &[u8])]) -> R,
+	Id: Clone + codec::Encode,
+	Sig: Clone + codec::Encode,
 {
 	let encoded_justification = justification.encode();
 	write_aux(&[(BEST_JUSTIFICATION, &encoded_justification[..])])
 }
 
 /// Fetch the justification for the latest block finalized by GRANDPA, if any.
-pub fn best_justification<B, Block>(
+///
+/// Pass `Sig = AuthoritySignature` for classical ed25519 GRANDPA; Continuum passes Dilithium.
+pub fn best_justification<B, Block, Id, Sig>(
 	backend: &B,
-) -> ClientResult<Option<GrandpaJustification<Block>>>
+) -> ClientResult<Option<GrandpaJustification<Block, Id, Sig>>>
 where
 	B: AuxStore,
 	Block: BlockT,
+	Id: Clone + codec::Decode,
+	Sig: Clone + codec::Decode,
 {
-	load_decode::<_, GrandpaJustification<Block>>(backend, BEST_JUSTIFICATION)
+	load_decode::<_, GrandpaJustification<Block, Id, Sig>>(backend, BEST_JUSTIFICATION)
 }
 
 /// Write voter set state.
-pub(crate) fn write_voter_set_state<Block: BlockT, B: AuxStore>(
+pub(crate) fn write_voter_set_state<Block: BlockT, B: AuxStore, Id, Sig>(
 	backend: &B,
-	state: &VoterSetState<Block>,
-) -> ClientResult<()> {
+	state: &VoterSetState<Block, Id, Sig>,
+) -> ClientResult<()>
+where
+	Id: crate::authorities::AuthorityIdBounds + codec::Encode,
+	Sig: sp_consensus_grandpa::AuthoritySignatureBounds + codec::Encode,
+{
 	backend.insert_aux(&[(SET_STATE_KEY, state.encode().as_slice())], &[])
 }
 
 /// Write concluded round.
-pub(crate) fn write_concluded_round<Block: BlockT, B: AuxStore>(
+pub(crate) fn write_concluded_round<Block: BlockT, Id, Sig, B: AuxStore>(
 	backend: &B,
-	round_data: &CompletedRound<Block>,
-) -> ClientResult<()> {
+	round_data: &CompletedRound<Block, Id, Sig>,
+) -> ClientResult<()>
+where
+	Id: Clone + codec::Encode,
+	Sig: Clone + codec::Encode,
+{
 	let mut key = CONCLUDED_ROUNDS.to_vec();
 	let round_number = round_data.number;
 	round_number.using_encoded(|n| key.extend(n));
@@ -553,7 +582,7 @@ mod test {
 		assert_eq!(load_decode::<_, u32>(&client, VERSION_KEY).unwrap(), None);
 
 		// should perform the migration
-		load_persistent::<substrate_test_runtime_client::runtime::Block, _, _>(
+		load_persistent::<substrate_test_runtime_client::runtime::Block, _, _, AuthorityId, AuthoritySignature>(
 			&client,
 			H256::random(),
 			0,
@@ -564,7 +593,7 @@ mod test {
 		assert_eq!(load_decode::<_, u32>(&client, VERSION_KEY).unwrap(), Some(3));
 
 		let PersistentData { authority_set, set_state, .. } =
-			load_persistent::<substrate_test_runtime_client::runtime::Block, _, _>(
+			load_persistent::<substrate_test_runtime_client::runtime::Block, _, _, AuthorityId, AuthoritySignature>(
 				&client,
 				H256::random(),
 				0,
@@ -646,7 +675,7 @@ mod test {
 		assert_eq!(load_decode::<_, u32>(&client, VERSION_KEY).unwrap(), Some(1));
 
 		// should perform the migration
-		load_persistent::<substrate_test_runtime_client::runtime::Block, _, _>(
+		load_persistent::<substrate_test_runtime_client::runtime::Block, _, _, AuthorityId, AuthoritySignature>(
 			&client,
 			H256::random(),
 			0,
@@ -657,7 +686,7 @@ mod test {
 		assert_eq!(load_decode::<_, u32>(&client, VERSION_KEY).unwrap(), Some(3));
 
 		let PersistentData { authority_set, set_state, .. } =
-			load_persistent::<substrate_test_runtime_client::runtime::Block, _, _>(
+			load_persistent::<substrate_test_runtime_client::runtime::Block, _, _, AuthorityId, AuthoritySignature>(
 				&client,
 				H256::random(),
 				0,
@@ -736,7 +765,7 @@ mod test {
 		assert_eq!(load_decode::<_, u32>(&client, VERSION_KEY).unwrap(), Some(2));
 
 		// should perform the migration
-		load_persistent::<substrate_test_runtime_client::runtime::Block, _, _>(
+		load_persistent::<substrate_test_runtime_client::runtime::Block, _, _, AuthorityId, AuthoritySignature>(
 			&client,
 			H256::random(),
 			0,
@@ -750,6 +779,8 @@ mod test {
 			substrate_test_runtime_client::runtime::Block,
 			_,
 			_,
+			AuthorityId,
+			AuthoritySignature,
 		>(
 			&client, H256::random(), 0, || unreachable!()
 		)

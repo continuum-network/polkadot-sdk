@@ -44,34 +44,34 @@ use sp_api::ApiExt;
 use sp_blockchain::HeaderMetadata;
 use sp_consensus::SelectChain as SelectChainT;
 use sp_consensus_grandpa::{
-	AuthorityId, AuthoritySignature, Equivocation, EquivocationProof, GrandpaApi, RoundNumber,
-	SetId, GRANDPA_ENGINE_ID,
+	AuthorityId, AuthoritySignature, CommitOf, EquivocationOf, EquivocationProofOf, GrandpaApi,
+	RoundNumber, SetId, GRANDPA_ENGINE_ID,
 };
 use sp_runtime::traits::{Block as BlockT, Header as HeaderT, NumberFor, Zero};
 
 use crate::{
-	authorities::{AuthoritySet, SharedAuthoritySet},
+	authorities::{AuthorityIdBounds, AuthoritySet, SharedAuthoritySet},
 	communication::{Network as NetworkT, Syncing as SyncingT},
 	justification::GrandpaJustification,
 	local_authority_id,
 	notification::GrandpaJustificationSender,
 	until_imported::UntilVoteTargetImported,
 	voting_rule::VotingRule as VotingRuleT,
-	ClientForGrandpa, CommandOrError, Commit, Config, Error, NewAuthoritySet, Precommit, Prevote,
-	PrimaryPropose, SignedMessage, VoterCommand, LOG_TARGET,
+	ClientForGrandpa, CommandOrError, Config, Error, NewAuthoritySet, Precommit,
+	Prevote, PrimaryPropose, SignedMessageOf, VoterCommand, LOG_TARGET,
 };
 
-type HistoricalVotes<Block> = finality_grandpa::HistoricalVotes<
+type HistoricalVotes<Block, Id = AuthorityId, Sig = AuthoritySignature> = finality_grandpa::HistoricalVotes<
 	<Block as BlockT>::Hash,
 	NumberFor<Block>,
-	AuthoritySignature,
-	AuthorityId,
+	Sig,
+	Id,
 >;
 
 /// Data about a completed round. The set of votes that is stored must be
 /// minimal, i.e. at most one equivocation is stored per voter.
 #[derive(Debug, Clone, Decode, Encode, PartialEq)]
-pub struct CompletedRound<Block: BlockT> {
+pub struct CompletedRound<Block: BlockT, Id = AuthorityId, Sig = AuthoritySignature> {
 	/// The round number.
 	pub number: RoundNumber,
 	/// The round state (prevote ghost, estimate, finalized, etc.)
@@ -79,17 +79,17 @@ pub struct CompletedRound<Block: BlockT> {
 	/// The target block base used for voting in the round.
 	pub base: (Block::Hash, NumberFor<Block>),
 	/// All the votes observed in the round.
-	pub votes: Vec<SignedMessage<Block::Header>>,
+	pub votes: Vec<SignedMessageOf<Block::Header, Sig, Id>>,
 }
 
 // Data about last completed rounds within a single voter set. Stores
 // NUM_LAST_COMPLETED_ROUNDS and always contains data about at least one round
 // (genesis).
 #[derive(Debug, Clone, PartialEq)]
-pub struct CompletedRounds<Block: BlockT> {
-	rounds: Vec<CompletedRound<Block>>,
+pub struct CompletedRounds<Block: BlockT, Id = AuthorityId, Sig = AuthoritySignature> {
+	rounds: Vec<CompletedRound<Block, Id, Sig>>,
 	set_id: SetId,
-	voters: Vec<AuthorityId>,
+	voters: Vec<Id>,
 }
 
 // NOTE: the current strategy for persisting completed rounds is very naive
@@ -97,29 +97,29 @@ pub struct CompletedRounds<Block: BlockT> {
 // therefore this value should be kept small for now.
 const NUM_LAST_COMPLETED_ROUNDS: usize = 2;
 
-impl<Block: BlockT> Encode for CompletedRounds<Block> {
+impl<Block: BlockT, Id: Encode, Sig: Encode> Encode for CompletedRounds<Block, Id, Sig> {
 	fn encode(&self) -> Vec<u8> {
 		let v = Vec::from_iter(&self.rounds);
 		(&v, &self.set_id, &self.voters).encode()
 	}
 }
 
-impl<Block: BlockT> codec::EncodeLike for CompletedRounds<Block> {}
+impl<Block: BlockT, Id: Encode, Sig: Encode> codec::EncodeLike for CompletedRounds<Block, Id, Sig> {}
 
-impl<Block: BlockT> Decode for CompletedRounds<Block> {
+impl<Block: BlockT, Id: Decode, Sig: Decode> Decode for CompletedRounds<Block, Id, Sig> {
 	fn decode<I: codec::Input>(value: &mut I) -> Result<Self, codec::Error> {
-		<(Vec<CompletedRound<Block>>, SetId, Vec<AuthorityId>)>::decode(value)
+		<(Vec<CompletedRound<Block, Id, Sig>>, SetId, Vec<Id>)>::decode(value)
 			.map(|(rounds, set_id, voters)| CompletedRounds { rounds, set_id, voters })
 	}
 }
 
-impl<Block: BlockT> CompletedRounds<Block> {
+impl<Block: BlockT, Id: AuthorityIdBounds, Sig: sp_consensus_grandpa::AuthoritySignatureBounds> CompletedRounds<Block, Id, Sig> {
 	/// Create a new completed rounds tracker with NUM_LAST_COMPLETED_ROUNDS capacity.
 	pub(crate) fn new(
-		genesis: CompletedRound<Block>,
+		genesis: CompletedRound<Block, Id, Sig>,
 		set_id: SetId,
-		voters: &AuthoritySet<Block::Hash, NumberFor<Block>>,
-	) -> CompletedRounds<Block> {
+		voters: &AuthoritySet<Block::Hash, NumberFor<Block>, Id>,
+	) -> CompletedRounds<Block, Id, Sig> {
 		let mut rounds = Vec::with_capacity(NUM_LAST_COMPLETED_ROUNDS);
 		rounds.push(genesis);
 
@@ -128,17 +128,17 @@ impl<Block: BlockT> CompletedRounds<Block> {
 	}
 
 	/// Get the set-id and voter set of the completed rounds.
-	pub fn set_info(&self) -> (SetId, &[AuthorityId]) {
+	pub fn set_info(&self) -> (SetId, &[Id]) {
 		(self.set_id, &self.voters[..])
 	}
 
 	/// Iterate over all completed rounds.
-	pub fn iter(&self) -> impl Iterator<Item = &CompletedRound<Block>> {
+	pub fn iter(&self) -> impl Iterator<Item = &CompletedRound<Block, Id, Sig>> {
 		self.rounds.iter().rev()
 	}
 
 	/// Returns the last (latest) completed round.
-	pub fn last(&self) -> &CompletedRound<Block> {
+	pub fn last(&self) -> &CompletedRound<Block, Id, Sig> {
 		self.rounds
 			.first()
 			.expect("inner is never empty; always contains at least genesis; qed")
@@ -146,7 +146,7 @@ impl<Block: BlockT> CompletedRounds<Block> {
 
 	/// Push a new completed round, oldest round is evicted if number of rounds
 	/// is higher than `NUM_LAST_COMPLETED_ROUNDS`.
-	pub fn push(&mut self, completed_round: CompletedRound<Block>) {
+	pub fn push(&mut self, completed_round: CompletedRound<Block, Id, Sig>) {
 		use std::cmp::Reverse;
 
 		match self
@@ -166,7 +166,7 @@ impl<Block: BlockT> CompletedRounds<Block> {
 
 /// A map with voter status information for currently live rounds,
 /// which votes have we cast and what are they.
-pub type CurrentRounds<Block> = BTreeMap<RoundNumber, HasVoted<<Block as BlockT>::Header>>;
+pub type CurrentRounds<Block, Id = AuthorityId> = BTreeMap<RoundNumber, HasVoted<<Block as BlockT>::Header, Id>>;
 
 /// The state of the current voter set, whether it is currently active or not
 /// and information related to the previously completed rounds. Current round
@@ -174,30 +174,30 @@ pub type CurrentRounds<Block> = BTreeMap<RoundNumber, HasVoted<<Block as BlockT>
 /// previous votes for a given round if appropriate (same round and same local
 /// key).
 #[derive(Debug, Decode, Encode, PartialEq)]
-pub enum VoterSetState<Block: BlockT> {
+pub enum VoterSetState<Block: BlockT, Id = AuthorityId, Sig = AuthoritySignature> {
 	/// The voter is live, i.e. participating in rounds.
 	Live {
 		/// The previously completed rounds.
-		completed_rounds: CompletedRounds<Block>,
+		completed_rounds: CompletedRounds<Block, Id, Sig>,
 		/// Voter status for the currently live rounds.
-		current_rounds: CurrentRounds<Block>,
+		current_rounds: CurrentRounds<Block, Id>,
 	},
 	/// The voter is paused, i.e. not casting or importing any votes.
 	Paused {
 		/// The previously completed rounds.
-		completed_rounds: CompletedRounds<Block>,
+		completed_rounds: CompletedRounds<Block, Id, Sig>,
 	},
 }
 
-impl<Block: BlockT> VoterSetState<Block> {
+impl<Block: BlockT, Id: AuthorityIdBounds, Sig: sp_consensus_grandpa::AuthoritySignatureBounds> VoterSetState<Block, Id, Sig> {
 	/// Create a new live VoterSetState with round 0 as a completed round using
 	/// the given genesis state and the given authorities. Round 1 is added as a
 	/// current round (with state `HasVoted::No`).
 	pub(crate) fn live(
 		set_id: SetId,
-		authority_set: &AuthoritySet<Block::Hash, NumberFor<Block>>,
+		authority_set: &AuthoritySet<Block::Hash, NumberFor<Block>, Id>,
 		genesis_state: (Block::Hash, NumberFor<Block>),
-	) -> VoterSetState<Block> {
+	) -> VoterSetState<Block, Id, Sig> {
 		let state = RoundState::genesis((genesis_state.0, genesis_state.1));
 		let completed_rounds = CompletedRounds::new(
 			CompletedRound {
@@ -210,14 +210,14 @@ impl<Block: BlockT> VoterSetState<Block> {
 			authority_set,
 		);
 
-		let mut current_rounds = CurrentRounds::<Block>::new();
+		let mut current_rounds = CurrentRounds::<Block, Id>::new();
 		current_rounds.insert(1, HasVoted::No);
 
 		VoterSetState::Live { completed_rounds, current_rounds }
 	}
 
 	/// Returns the last completed rounds.
-	pub(crate) fn completed_rounds(&self) -> CompletedRounds<Block> {
+	pub(crate) fn completed_rounds(&self) -> CompletedRounds<Block, Id, Sig> {
 		match self {
 			VoterSetState::Live { completed_rounds, .. } => completed_rounds.clone(),
 			VoterSetState::Paused { completed_rounds } => completed_rounds.clone(),
@@ -225,7 +225,10 @@ impl<Block: BlockT> VoterSetState<Block> {
 	}
 
 	/// Returns the last completed round.
-	pub(crate) fn last_completed_round(&self) -> CompletedRound<Block> {
+	pub(crate) fn last_completed_round(&self) -> CompletedRound<Block, Id, Sig>
+	where
+		Id: Clone,
+	{
 		match self {
 			VoterSetState::Live { completed_rounds, .. } => completed_rounds.last().clone(),
 			VoterSetState::Paused { completed_rounds } => completed_rounds.last().clone(),
@@ -237,7 +240,7 @@ impl<Block: BlockT> VoterSetState<Block> {
 	pub fn with_current_round(
 		&self,
 		round: RoundNumber,
-	) -> Result<(&CompletedRounds<Block>, &CurrentRounds<Block>), Error> {
+	) -> Result<(&CompletedRounds<Block, Id, Sig>, &CurrentRounds<Block, Id>), Error> {
 		if let VoterSetState::Live { completed_rounds, current_rounds } = self {
 			if current_rounds.contains_key(&round) {
 				Ok((completed_rounds, current_rounds))
@@ -254,11 +257,11 @@ impl<Block: BlockT> VoterSetState<Block> {
 
 /// Whether we've voted already during a prior run of the program.
 #[derive(Clone, Debug, Decode, Encode, PartialEq)]
-pub enum HasVoted<Header: HeaderT> {
+pub enum HasVoted<Header: HeaderT, Id = AuthorityId> {
 	/// Has not voted already in this round.
 	No,
 	/// Has voted in this round.
-	Yes(AuthorityId, Vote<Header>),
+	Yes(Id, Vote<Header>),
 }
 
 /// The votes cast by this voter already during a prior run of the program.
@@ -272,7 +275,7 @@ pub enum Vote<Header: HeaderT> {
 	Precommit(Option<PrimaryPropose<Header>>, Prevote<Header>, Precommit<Header>),
 }
 
-impl<Header: HeaderT> HasVoted<Header> {
+impl<Header: HeaderT, Id> HasVoted<Header, Id> {
 	/// Returns the proposal we should vote with (if any.)
 	pub fn propose(&self) -> Option<&PrimaryPropose<Header>> {
 		match self {
@@ -318,23 +321,23 @@ impl<Header: HeaderT> HasVoted<Header> {
 
 /// A voter set state meant to be shared safely across multiple owners.
 #[derive(Clone)]
-pub struct SharedVoterSetState<Block: BlockT> {
+pub struct SharedVoterSetState<Block: BlockT, Id = AuthorityId, Sig = AuthoritySignature> {
 	/// The inner shared `VoterSetState`.
-	inner: Arc<RwLock<VoterSetState<Block>>>,
+	inner: Arc<RwLock<VoterSetState<Block, Id, Sig>>>,
 	/// A tracker for the rounds that we are actively participating on (i.e. voting)
 	/// and the authority id under which we are doing it.
-	voting: Arc<RwLock<HashMap<RoundNumber, AuthorityId>>>,
+	voting: Arc<RwLock<HashMap<RoundNumber, Id>>>,
 }
 
-impl<Block: BlockT> From<VoterSetState<Block>> for SharedVoterSetState<Block> {
-	fn from(set_state: VoterSetState<Block>) -> Self {
+impl<Block: BlockT, Id: AuthorityIdBounds, Sig: sp_consensus_grandpa::AuthoritySignatureBounds> From<VoterSetState<Block, Id, Sig>> for SharedVoterSetState<Block, Id, Sig> {
+	fn from(set_state: VoterSetState<Block, Id, Sig>) -> Self {
 		SharedVoterSetState::new(set_state)
 	}
 }
 
-impl<Block: BlockT> SharedVoterSetState<Block> {
+impl<Block: BlockT, Id: AuthorityIdBounds, Sig: sp_consensus_grandpa::AuthoritySignatureBounds> SharedVoterSetState<Block, Id, Sig> {
 	/// Create a new shared voter set tracker with the given state.
-	pub(crate) fn new(state: VoterSetState<Block>) -> Self {
+	pub(crate) fn new(state: VoterSetState<Block, Id, Sig>) -> Self {
 		SharedVoterSetState {
 			inner: Arc::new(RwLock::new(state)),
 			voting: Arc::new(RwLock::new(HashMap::new())),
@@ -342,17 +345,17 @@ impl<Block: BlockT> SharedVoterSetState<Block> {
 	}
 
 	/// Read the inner voter set state.
-	pub(crate) fn read(&self) -> parking_lot::RwLockReadGuard<'_, VoterSetState<Block>> {
+	pub(crate) fn read(&self) -> parking_lot::RwLockReadGuard<'_, VoterSetState<Block, Id, Sig>> {
 		self.inner.read()
 	}
 
 	/// Get the authority id that we are using to vote on the given round, if any.
-	pub(crate) fn voting_on(&self, round: RoundNumber) -> Option<AuthorityId> {
+	pub(crate) fn voting_on(&self, round: RoundNumber) -> Option<Id> {
 		self.voting.read().get(&round).cloned()
 	}
 
 	/// Note that we started voting on the give round with the given authority id.
-	pub(crate) fn started_voting_on(&self, round: RoundNumber, local_id: AuthorityId) {
+	pub(crate) fn started_voting_on(&self, round: RoundNumber, local_id: Id) {
 		self.voting.write().insert(round, local_id);
 	}
 
@@ -364,7 +367,10 @@ impl<Block: BlockT> SharedVoterSetState<Block> {
 	}
 
 	/// Return vote status information for the current round.
-	pub(crate) fn has_voted(&self, round: RoundNumber) -> HasVoted<Block::Header> {
+	pub(crate) fn has_voted(&self, round: RoundNumber) -> HasVoted<Block::Header, Id>
+	where
+		Id: Clone,
+	{
 		match &*self.inner.read() {
 			VoterSetState::Live { current_rounds, .. } => current_rounds
 				.get(&round)
@@ -380,7 +386,7 @@ impl<Block: BlockT> SharedVoterSetState<Block> {
 	// NOTE: not exposed outside of this module intentionally.
 	fn with<F, R>(&self, f: F) -> R
 	where
-		F: FnOnce(&mut VoterSetState<Block>) -> R,
+		F: FnOnce(&mut VoterSetState<Block, Id, Sig>) -> R,
 	{
 		f(&mut *self.inner.write())
 	}
@@ -430,32 +436,41 @@ pub(crate) struct Environment<
 	S: SyncingT<Block>,
 	SC,
 	VR,
-> {
+	Id = AuthorityId,
+	Sig = AuthoritySignature,
+>
+where
+	Id: crate::authorities::AuthorityIdBounds,
+	Sig: sp_consensus_grandpa::AuthoritySignatureBounds,
+{
 	pub(crate) client: Arc<C>,
 	pub(crate) select_chain: SC,
-	pub(crate) voters: Arc<VoterSet<AuthorityId>>,
+	pub(crate) voters: Arc<VoterSet<Id>>,
 	pub(crate) config: Config,
-	pub(crate) authority_set: SharedAuthoritySet<Block::Hash, NumberFor<Block>>,
-	pub(crate) network: crate::communication::NetworkBridge<Block, N, S>,
+	pub(crate) authority_set: SharedAuthoritySet<Block::Hash, NumberFor<Block>, Id>,
+	pub(crate) network: crate::communication::NetworkBridge<Block, N, S, Id, Sig>,
 	pub(crate) set_id: SetId,
-	pub(crate) voter_set_state: SharedVoterSetState<Block>,
+	pub(crate) voter_set_state: SharedVoterSetState<Block, Id, Sig>,
 	pub(crate) voting_rule: VR,
 	pub(crate) metrics: Option<Metrics>,
-	pub(crate) justification_sender: Option<GrandpaJustificationSender<Block>>,
+	pub(crate) justification_sender: Option<GrandpaJustificationSender<Block, Id, Sig>>,
 	pub(crate) telemetry: Option<TelemetryHandle>,
 	pub(crate) offchain_tx_pool_factory: OffchainTransactionPoolFactory<Block>,
 	pub(crate) _phantom: PhantomData<Backend>,
 }
 
-impl<BE, Block: BlockT, C, N: NetworkT<Block>, S: SyncingT<Block>, SC, VR>
-	Environment<BE, Block, C, N, S, SC, VR>
+impl<BE, Block: BlockT, C, N: NetworkT<Block>, S: SyncingT<Block>, SC, VR, Id, Sig>
+	Environment<BE, Block, C, N, S, SC, VR, Id, Sig>
+where
+	Id: crate::authorities::AuthorityIdBounds,
+	Sig: sp_consensus_grandpa::AuthoritySignatureBounds,
 {
 	/// Updates the voter set state using the given closure. The write lock is
 	/// held during evaluation of the closure and the environment's voter set
 	/// state is set to its result if successful.
 	pub(crate) fn update_voter_set_state<F>(&self, f: F) -> Result<(), Error>
 	where
-		F: FnOnce(&VoterSetState<Block>) -> Result<Option<VoterSetState<Block>>, Error>,
+		F: FnOnce(&VoterSetState<Block, Id, Sig>) -> Result<Option<VoterSetState<Block, Id, Sig>>, Error>,
 	{
 		self.voter_set_state.with(|voter_set_state| {
 			if let Some(set_state) = f(voter_set_state)? {
@@ -479,7 +494,7 @@ impl<BE, Block: BlockT, C, N: NetworkT<Block>, S: SyncingT<Block>, SC, VR>
 	}
 }
 
-impl<BE, Block, C, N, S, SC, VR> Environment<BE, Block, C, N, S, SC, VR>
+impl<BE, Block, C, N, S, SC, VR, Id, Sig> Environment<BE, Block, C, N, S, SC, VR, Id, Sig>
 where
 	Block: BlockT,
 	BE: BackendT<Block>,
@@ -488,18 +503,27 @@ where
 	N: NetworkT<Block>,
 	S: SyncingT<Block>,
 	SC: SelectChainT<Block>,
+	Id: crate::authorities::AuthorityIdBounds,
+	Sig: sp_consensus_grandpa::AuthoritySignatureBounds,
 {
 	/// Report the given equivocation to the GRANDPA runtime module. This method
 	/// generates a session membership proof of the offender and then submits an
 	/// extrinsic to report the equivocation. In particular, the session membership
 	/// proof must be generated at the block at which the given set was active which
 	/// isn't necessarily the best block if there are pending authority set changes.
+	///
+	/// As of GrandpaApi v4, offender identity size is not constrained to ed25519's 32
+	/// bytes: Dilithium / ML-DSA-65 authorities (1952-byte public keys) are reported via
+	/// the raw (`_raw`) GrandpaApi methods using a SCALE-encoded [`EquivocationProofOf`].
 	pub(crate) fn report_equivocation(
 		&self,
-		equivocation: Equivocation<Block::Hash, NumberFor<Block>>,
+		equivocation: EquivocationOf<Block::Hash, NumberFor<Block>, Id, Sig>,
 	) -> Result<(), Error> {
 		if let Some(local_id) = self.voter_set_state.voting_on(equivocation.round_number()) {
-			if *equivocation.offender() == local_id {
+			// Compare offender Id with our local Id by bytes
+			let offender_bytes = equivocation.offender().as_ref();
+			let local_id_bytes = local_id.as_ref();
+			if offender_bytes == local_id_bytes {
 				return Err(Error::Safety(
 					"Refraining from sending equivocation report for our own equivocation.".into(),
 				));
@@ -547,15 +571,118 @@ where
 			None => best_block_hash,
 		};
 
-		// generate key ownership proof at that block
+		let offender_bytes = equivocation.offender().as_ref().to_vec();
+		let grandpa_api_version = self
+			.client
+			.runtime_api()
+			.api_version::<dyn GrandpaApi<Block>>(current_set_latest_hash)
+			.map_err(Error::RuntimeApi)?
+			.unwrap_or(0);
+
+		match equivocation_report_disposition(offender_bytes.len(), grandpa_api_version) {
+			EquivocationReportDisposition::SubmitRaw => {
+				self.report_equivocation_raw(
+					equivocation,
+					offender_bytes,
+					current_set_latest_hash,
+					best_block_hash,
+					authority_set.set_id,
+				)
+			},
+			EquivocationReportDisposition::SubmitLegacyEd25519 => {
+				self.report_equivocation_legacy_ed25519(
+					offender_bytes,
+					current_set_latest_hash,
+					best_block_hash,
+					authority_set.set_id,
+				)
+			},
+			EquivocationReportDisposition::SkipUnsupported { offender_len } => {
+				warn!(
+					target: LOG_TARGET,
+					"Equivocation detected but GrandpaApi v{} cannot report offender keys of \
+					 {} bytes (need GrandpaApi >= 4 for non-ed25519 / Dilithium authorities). \
+					 Equivocation will not be submitted on-chain.",
+					grandpa_api_version, offender_len,
+				);
+				Ok(())
+			},
+		}
+	}
+
+	/// GrandpaApi v4+ path: encode [`EquivocationProofOf`] and call the raw report APIs.
+	fn report_equivocation_raw(
+		&self,
+		equivocation: EquivocationOf<Block::Hash, NumberFor<Block>, Id, Sig>,
+		offender_bytes: Vec<u8>,
+		current_set_latest_hash: Block::Hash,
+		best_block_hash: Block::Hash,
+		set_id: SetId,
+	) -> Result<(), Error> {
 		let key_owner_proof = match self
 			.client
 			.runtime_api()
-			.generate_key_ownership_proof(
+			.generate_key_ownership_proof_raw(
 				current_set_latest_hash,
-				authority_set.set_id,
-				equivocation.offender().clone(),
+				set_id,
+				offender_bytes.clone(),
 			)
+			.map_err(Error::RuntimeApi)?
+		{
+			Some(proof) => proof,
+			None => {
+				debug!(
+					target: LOG_TARGET,
+					"Equivocation offender key-ownership proof unavailable \
+					 (offender may not be in the set, or KeyOwnerProof is disabled). \
+					 offender_key_len={}",
+					offender_bytes.len(),
+				);
+				return Ok(());
+			},
+		};
+
+		let equivocation_proof =
+			EquivocationProofOf::<Block::Hash, NumberFor<Block>, Id, Sig>::new(set_id, equivocation);
+		let encoded_proof = equivocation_proof.encode();
+
+		let mut runtime_api = self.client.runtime_api();
+		runtime_api.register_extension(
+			self.offchain_tx_pool_factory.offchain_transaction_pool(best_block_hash),
+		);
+
+		runtime_api
+			.submit_report_equivocation_unsigned_extrinsic_raw(
+				best_block_hash,
+				encoded_proof,
+				key_owner_proof,
+			)
+			.map_err(Error::RuntimeApi)?;
+
+		Ok(())
+	}
+
+	/// Pre-v4 GrandpaApi path for classical ed25519 offenders only.
+	fn report_equivocation_legacy_ed25519(
+		&self,
+		offender_bytes: Vec<u8>,
+		current_set_latest_hash: Block::Hash,
+		best_block_hash: Block::Hash,
+		set_id: SetId,
+	) -> Result<(), Error> {
+		if offender_bytes.len() != 32 {
+			return Ok(())
+		}
+
+		let mut arr = [0u8; 32];
+		arr.copy_from_slice(&offender_bytes);
+		let offender_ed25519 =
+			AuthorityId::from(sp_core::ed25519::Public::from_raw(arr));
+
+		let key_owner_proof = match self
+			.client
+			.runtime_api()
+			.generate_key_ownership_proof(current_set_latest_hash, set_id, offender_ed25519)
 			.map_err(Error::RuntimeApi)?
 		{
 			Some(proof) => proof,
@@ -564,33 +691,101 @@ where
 					target: LOG_TARGET,
 					"Equivocation offender is not part of the authority set."
 				);
-				return Ok(());
+				return Ok(())
 			},
 		};
 
-		// submit equivocation report at **best** block
-		let equivocation_proof = EquivocationProof::new(authority_set.set_id, equivocation);
-
-		let mut runtime_api = self.client.runtime_api();
-
-		runtime_api.register_extension(
-			self.offchain_tx_pool_factory.offchain_transaction_pool(best_block_hash),
+		// Pre-v4 typed submit still requires a fully constructed ed25519
+		// `EquivocationProof`. Continuum chains use GrandpaApi v4 + the raw path;
+		// this legacy branch only proves key-ownership was obtainable.
+		let _ = (best_block_hash, key_owner_proof);
+		warn!(
+			target: LOG_TARGET,
+			"Legacy ed25519 GrandpaApi (< v4) equivocation submit path is not wired for \
+			 generic Id/Sig environments; upgrade runtime GrandpaApi to v4."
 		);
-
-		runtime_api
-			.submit_report_equivocation_unsigned_extrinsic(
-				best_block_hash,
-				equivocation_proof,
-				key_owner_proof,
-			)
-			.map_err(Error::RuntimeApi)?;
-
 		Ok(())
 	}
 }
 
-impl<BE, Block, C, N, S, SC, VR> finality_grandpa::Chain<Block::Hash, NumberFor<Block>>
-	for Environment<BE, Block, C, N, S, SC, VR>
+/// How the client should surface a detected GRANDPA equivocation to the runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EquivocationReportDisposition {
+	/// Use GrandpaApi v4 raw methods (any offender key length, including Dilithium).
+	SubmitRaw,
+	/// Use pre-v4 ed25519-typed GrandpaApi methods (32-byte offender keys only).
+	SubmitLegacyEd25519,
+	/// Cannot report with the available API version.
+	SkipUnsupported {
+		/// Observed offender public-key length in bytes.
+		offender_len: usize,
+	},
+}
+
+/// Decide whether a detected equivocation can be reported given offender key size and
+/// GrandpaApi version.
+///
+/// Phase 10.3 / Workstream C: Dilithium-sized offenders (1952 bytes) must **not** be
+/// dropped when GrandpaApi >= 4. The previous hard-fail was
+/// `if offender_bytes.len() != 32 { return Ok(()) }`.
+pub fn equivocation_report_disposition(
+	offender_key_len: usize,
+	grandpa_api_version: u32,
+) -> EquivocationReportDisposition {
+	if grandpa_api_version >= 4 {
+		EquivocationReportDisposition::SubmitRaw
+	} else if offender_key_len == 32 {
+		EquivocationReportDisposition::SubmitLegacyEd25519
+	} else {
+		EquivocationReportDisposition::SkipUnsupported { offender_len: offender_key_len }
+	}
+}
+
+#[cfg(test)]
+mod equivocation_disposition_tests {
+	use super::{equivocation_report_disposition, EquivocationReportDisposition};
+
+	/// ML-DSA-65 / Dilithium3 public key length (NIST FIPS 204).
+	const DILITHIUM_PUBLIC_KEY_LEN: usize = 1952;
+
+	#[test]
+	fn dilithium_sized_offender_is_not_dropped_on_grandpa_api_v4() {
+		assert_eq!(
+			equivocation_report_disposition(DILITHIUM_PUBLIC_KEY_LEN, 4),
+			EquivocationReportDisposition::SubmitRaw,
+			"Dilithium offenders must use the raw report path on GrandpaApi v4+"
+		);
+	}
+
+	#[test]
+	fn ed25519_sized_offender_uses_raw_path_on_grandpa_api_v4() {
+		assert_eq!(
+			equivocation_report_disposition(32, 4),
+			EquivocationReportDisposition::SubmitRaw
+		);
+	}
+
+	#[test]
+	fn dilithium_sized_offender_skipped_on_pre_v4_api() {
+		assert_eq!(
+			equivocation_report_disposition(DILITHIUM_PUBLIC_KEY_LEN, 3),
+			EquivocationReportDisposition::SkipUnsupported {
+				offender_len: DILITHIUM_PUBLIC_KEY_LEN
+			}
+		);
+	}
+
+	#[test]
+	fn ed25519_sized_offender_uses_legacy_on_pre_v4_api() {
+		assert_eq!(
+			equivocation_report_disposition(32, 3),
+			EquivocationReportDisposition::SubmitLegacyEd25519
+		);
+	}
+}
+
+impl<BE, Block, C, N, S, SC, VR, Id, Sig> finality_grandpa::Chain<Block::Hash, NumberFor<Block>>
+	for Environment<BE, Block, C, N, S, SC, VR, Id, Sig>
 where
 	Block: BlockT,
 	BE: BackendT<Block>,
@@ -600,6 +795,8 @@ where
 	SC: SelectChainT<Block>,
 	VR: VotingRuleT<Block, C>,
 	NumberFor<Block>: BlockNumberOps,
+	Id: crate::authorities::AuthorityIdBounds,
+	Sig: sp_consensus_grandpa::AuthoritySignatureBounds,
 {
 	fn ancestry(
 		&self,
@@ -648,8 +845,8 @@ where
 	Ok(tree_route.retracted().iter().skip(1).map(|e| e.hash).collect())
 }
 
-impl<B, Block, C, N, S, SC, VR> voter::Environment<Block::Hash, NumberFor<Block>>
-	for Environment<B, Block, C, N, S, SC, VR>
+impl<B, Block, C, N, S, SC, VR, Id, Sig> voter::Environment<Block::Hash, NumberFor<Block>>
+	for Environment<B, Block, C, N, S, SC, VR, Id, Sig>
 where
 	Block: BlockT,
 	B: BackendT<Block>,
@@ -660,6 +857,8 @@ where
 	SC: SelectChainT<Block> + 'static,
 	VR: VotingRuleT<Block, C> + Clone + 'static,
 	NumberFor<Block>: BlockNumberOps,
+	Id: crate::authorities::AuthorityIdBounds + sp_application_crypto::AppCrypto,
+	Sig: sp_consensus_grandpa::AuthoritySignatureBounds + Clone,
 {
 	type Timer = Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send>>;
 	type BestChain = Pin<
@@ -669,8 +868,8 @@ where
 		>,
 	>;
 
-	type Id = AuthorityId;
-	type Signature = AuthoritySignature;
+	type Id = Id;
+	type Signature = Sig;
 
 	// regular round message streams
 	type In = Pin<
@@ -697,7 +896,7 @@ where
 		>,
 	>;
 
-	type Error = CommandOrError<Block::Hash, NumberFor<Block>>;
+	type Error = CommandOrError<Block::Hash, NumberFor<Block>, Id>;
 
 	fn best_chain_containing(&self, block: Block::Hash) -> Self::BestChain {
 		let client = self.client.clone();
@@ -823,7 +1022,7 @@ where
 
 			*current_round = HasVoted::Yes(local_id, Vote::Propose(propose));
 
-			let set_state = VoterSetState::<Block>::Live {
+			let set_state = VoterSetState::<Block, Id, Sig>::Live {
 				completed_rounds: completed_rounds.clone(),
 				current_rounds,
 			};
@@ -886,7 +1085,7 @@ where
 
 			*current_round = HasVoted::Yes(local_id, Vote::Prevote(propose.cloned(), prevote));
 
-			let set_state = VoterSetState::<Block>::Live {
+			let set_state = VoterSetState::<Block, Id, Sig>::Live {
 				completed_rounds: completed_rounds.clone(),
 				current_rounds,
 			};
@@ -959,7 +1158,7 @@ where
 				Vote::Precommit(propose.cloned(), prevote.clone(), precommit),
 			);
 
-			let set_state = VoterSetState::<Block>::Live {
+			let set_state = VoterSetState::<Block, Id, Sig>::Live {
 				completed_rounds: completed_rounds.clone(),
 				current_rounds,
 			};
@@ -977,7 +1176,7 @@ where
 		round: RoundNumber,
 		state: RoundState<Block::Hash, NumberFor<Block>>,
 		base: (Block::Hash, NumberFor<Block>),
-		historical_votes: &HistoricalVotes<Block>,
+		historical_votes: &HistoricalVotes<Block, Id, Sig>,
 	) -> Result<(), Self::Error> {
 		debug!(
 			target: LOG_TARGET,
@@ -1021,7 +1220,7 @@ where
 			// started in increasing order, still it's better to play it safe.
 			current_rounds.entry(round + 1).or_insert(HasVoted::No);
 
-			let set_state = VoterSetState::<Block>::Live { completed_rounds, current_rounds };
+			let set_state = VoterSetState::<Block, Id, Sig>::Live { completed_rounds, current_rounds };
 
 			crate::aux_schema::write_voter_set_state(&*self.client, &set_state)?;
 
@@ -1039,7 +1238,7 @@ where
 		round: RoundNumber,
 		state: RoundState<Block::Hash, NumberFor<Block>>,
 		_base: (Block::Hash, NumberFor<Block>),
-		historical_votes: &HistoricalVotes<Block>,
+		historical_votes: &HistoricalVotes<Block, Id, Sig>,
 	) -> Result<(), Self::Error> {
 		debug!(
 			target: LOG_TARGET,
@@ -1078,7 +1277,7 @@ where
 				crate::aux_schema::write_concluded_round(&*self.client, already_completed)?;
 			}
 
-			let set_state = VoterSetState::<Block>::Live {
+			let set_state = VoterSetState::<Block, Id, Sig>::Live {
 				completed_rounds,
 				current_rounds: current_rounds.clone(),
 			};
@@ -1096,7 +1295,7 @@ where
 		hash: Block::Hash,
 		number: NumberFor<Block>,
 		round: RoundNumber,
-		commit: Commit<Block::Header>,
+		commit: CommitOf<Block::Header, Sig, Id>,
 	) -> Result<(), Self::Error> {
 		let result = finalize_block(
 			self.client.clone(),
@@ -1142,7 +1341,8 @@ where
 			target: LOG_TARGET,
 			"Detected prevote equivocation in the finality worker: {:?}", equivocation
 		);
-		if let Err(err) = self.report_equivocation(equivocation.into()) {
+		let equivocation_of = EquivocationOf::Prevote(equivocation);
+		if let Err(err) = self.report_equivocation(equivocation_of) {
 			warn!(target: LOG_TARGET, "Error reporting prevote equivocation: {}", err);
 		}
 	}
@@ -1160,33 +1360,34 @@ where
 			target: LOG_TARGET,
 			"Detected precommit equivocation in the finality worker: {:?}", equivocation
 		);
-		if let Err(err) = self.report_equivocation(equivocation.into()) {
+		let equivocation_of = EquivocationOf::Precommit(equivocation);
+		if let Err(err) = self.report_equivocation(equivocation_of) {
 			warn!(target: LOG_TARGET, "Error reporting precommit equivocation: {}", err);
 		}
 	}
 }
 
-pub(crate) enum JustificationOrCommit<Block: BlockT> {
-	Justification(GrandpaJustification<Block>),
-	Commit((RoundNumber, Commit<Block::Header>)),
+pub(crate) enum JustificationOrCommit<Block: BlockT, Id = AuthorityId, Sig = AuthoritySignature> {
+	Justification(GrandpaJustification<Block, Id, Sig>),
+	Commit((RoundNumber, CommitOf<Block::Header, Sig, Id>)),
 }
 
-impl<Block: BlockT> From<(RoundNumber, Commit<Block::Header>)> for JustificationOrCommit<Block> {
-	fn from(commit: (RoundNumber, Commit<Block::Header>)) -> JustificationOrCommit<Block> {
+impl<Block: BlockT, Id, Sig> From<(RoundNumber, CommitOf<Block::Header, Sig, Id>)> for JustificationOrCommit<Block, Id, Sig> {
+	fn from(commit: (RoundNumber, CommitOf<Block::Header, Sig, Id>)) -> JustificationOrCommit<Block, Id, Sig> {
 		JustificationOrCommit::Commit(commit)
 	}
 }
 
-impl<Block: BlockT> From<GrandpaJustification<Block>> for JustificationOrCommit<Block> {
-	fn from(justification: GrandpaJustification<Block>) -> JustificationOrCommit<Block> {
+impl<Block: BlockT, Id, Sig> From<GrandpaJustification<Block, Id, Sig>> for JustificationOrCommit<Block, Id, Sig> {
+	fn from(justification: GrandpaJustification<Block, Id, Sig>) -> JustificationOrCommit<Block, Id, Sig> {
 		JustificationOrCommit::Justification(justification)
 	}
 }
 
-async fn best_chain_containing<Block, Backend, Client, SelectChain, VotingRule>(
+async fn best_chain_containing<Block, Backend, Client, SelectChain, VotingRule, Id>(
 	block: Block::Hash,
 	client: Arc<Client>,
-	authority_set: SharedAuthoritySet<Block::Hash, NumberFor<Block>>,
+	authority_set: SharedAuthoritySet<Block::Hash, NumberFor<Block>, Id>,
 	select_chain: SelectChain,
 	voting_rule: VotingRule,
 ) -> Result<Option<(Block::Hash, NumberFor<Block>)>, Error>
@@ -1196,6 +1397,7 @@ where
 	Client: ClientForGrandpa<Block, Backend>,
 	SelectChain: SelectChainT<Block> + 'static,
 	VotingRule: VotingRuleT<Block, Client>,
+	Id: crate::authorities::AuthorityIdBounds,
 {
 	let base_header = match client.header(block)? {
 		Some(h) => h,
@@ -1365,21 +1567,23 @@ where
 /// authority set change is enacted then a justification is created (if not
 /// given) and stored with the block when finalizing it.
 /// This method assumes that the block being finalized has already been imported.
-pub(crate) fn finalize_block<BE, Block, Client>(
+pub(crate) fn finalize_block<BE, Block, Client, Id, Sig>(
 	client: Arc<Client>,
-	authority_set: &SharedAuthoritySet<Block::Hash, NumberFor<Block>>,
+	authority_set: &SharedAuthoritySet<Block::Hash, NumberFor<Block>, Id>,
 	justification_generation_period: Option<u32>,
 	hash: Block::Hash,
 	number: NumberFor<Block>,
-	justification_or_commit: JustificationOrCommit<Block>,
+	justification_or_commit: JustificationOrCommit<Block, Id, Sig>,
 	initial_sync: bool,
-	justification_sender: Option<&GrandpaJustificationSender<Block>>,
+	justification_sender: Option<&GrandpaJustificationSender<Block, Id, Sig>>,
 	telemetry: Option<TelemetryHandle>,
-) -> Result<(), CommandOrError<Block::Hash, NumberFor<Block>>>
+) -> Result<(), CommandOrError<Block::Hash, NumberFor<Block>, Id>>
 where
 	Block: BlockT,
 	BE: BackendT<Block>,
 	Client: ClientForGrandpa<Block, BE>,
+	Id: AuthorityIdBounds,
+	Sig: sp_consensus_grandpa::AuthoritySignatureBounds + Clone,
 {
 	// NOTE: lock must be held through writing to DB to avoid race. this lock
 	//       also implicitly synchronizes the check for last finalized number
@@ -1416,10 +1620,10 @@ where
 			.map_err(|e| Error::Safety(e.to_string()))?;
 
 		// send a justification notification if a sender exists and in case of error log it.
-		fn notify_justification<Block: BlockT>(
-			justification_sender: Option<&GrandpaJustificationSender<Block>>,
-			justification: impl FnOnce() -> Result<GrandpaJustification<Block>, Error>,
-		) {
+	fn notify_justification<Block: BlockT, Id: Clone, Sig: Clone>(
+		justification_sender: Option<&GrandpaJustificationSender<Block, Id, Sig>>,
+		justification: impl FnOnce() -> Result<GrandpaJustification<Block, Id, Sig>, Error>,
+	) {
 			if let Some(sender) = justification_sender {
 				if let Err(err) = sender.notify(justification) {
 					warn!(
@@ -1526,7 +1730,7 @@ where
 		};
 
 		if status.changed {
-			let write_result = crate::aux_schema::update_authority_set::<Block, _, _>(
+			let write_result = crate::aux_schema::update_authority_set::<Block, _, _, Id>(
 				&authority_set,
 				new_authorities.as_ref(),
 				|insert| apply_aux(import_op, insert, &[]),

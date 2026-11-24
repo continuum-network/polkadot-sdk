@@ -39,7 +39,7 @@ use sp_consensus::{BlockOrigin, Error as ConsensusError, SelectChain};
 use sp_consensus_grandpa::{
 	AuthorityList, EquivocationProof, GrandpaApi, OpaqueKeyOwnershipProof, GRANDPA_ENGINE_ID,
 };
-use sp_core::H256;
+use sp_core::{crypto::ByteArray, H256};
 use sp_keyring::Ed25519Keyring;
 use sp_keystore::{testing::MemoryKeystore, Keystore, KeystorePtr};
 use sp_runtime::{
@@ -184,6 +184,14 @@ sp_api::mock_impl_runtime_apis! {
 			self.inner.genesis_authorities.clone()
 		}
 
+		fn grandpa_authorities_raw(&self) -> Vec<(Vec<u8>, u64)> {
+			self.inner
+				.genesis_authorities
+				.iter()
+				.map(|(id, weight)| (id.to_raw_vec(), *weight))
+				.collect()
+		}
+
 		fn current_set_id(&self) -> SetId {
 			0
 		}
@@ -195,9 +203,23 @@ sp_api::mock_impl_runtime_apis! {
 			None
 		}
 
+		fn submit_report_equivocation_unsigned_extrinsic_raw(
+			_equivocation_proof: Vec<u8>,
+			_key_owner_proof: OpaqueKeyOwnershipProof,
+		) -> Option<()> {
+			None
+		}
+
 		fn generate_key_ownership_proof(
 			_set_id: SetId,
 			_authority_id: AuthorityId,
+		) -> Option<OpaqueKeyOwnershipProof> {
+			None
+		}
+
+		fn generate_key_ownership_proof_raw(
+			_set_id: SetId,
+			_authority_id: Vec<u8>,
 		) -> Option<OpaqueKeyOwnershipProof> {
 			None
 		}
@@ -457,7 +479,7 @@ async fn finalize_3_voters_no_observers() {
 	for peer_id in 0..3 {
 		let client = net.lock().peers[peer_id].client().as_client();
 		let justification =
-			crate::aux_schema::best_justification::<_, Block>(&*client).unwrap().unwrap();
+			crate::aux_schema::best_justification::<_, Block, AuthorityId, AuthoritySignature>(&*client).unwrap().unwrap();
 
 		assert_eq!(justification.justification.commit.target_number, 20);
 	}
@@ -531,7 +553,7 @@ async fn finalize_3_voters_1_full_observer() {
 	for peer_id in 0..4 {
 		let client = net.lock().peers[peer_id].client().as_client();
 		let justification =
-			crate::aux_schema::best_justification::<_, Block>(&*client).unwrap().unwrap();
+			crate::aux_schema::best_justification::<_, Block, AuthorityId, AuthoritySignature>(&*client).unwrap().unwrap();
 
 		assert_eq!(justification.justification.commit.target_number, 20);
 	}
@@ -2147,12 +2169,12 @@ async fn imports_justification_for_regular_blocks_on_import() {
 
 		let msg = finality_grandpa::Message::Precommit(precommit.clone());
 		let encoded = sp_consensus_grandpa::localized_payload(round, set_id, &msg);
-		let signature = peers[0].sign(&encoded[..]).into();
+		let signature: AuthoritySignature = peers[0].sign(&encoded[..]).into();
 
 		let precommit = finality_grandpa::SignedPrecommit {
 			precommit,
 			signature,
-			id: peers[0].public().into(),
+			id: AuthorityId::from(peers[0].public()),
 		};
 
 		let commit = finality_grandpa::Commit {
@@ -2257,13 +2279,13 @@ async fn grandpa_environment_doesnt_send_equivocation_reports_for_itself() {
 
 	// reporting the equivocation should fail since the offender is a local
 	// authority (i.e. we have keys in our keystore for the given id)
-	let equivocation_proof = sp_consensus_grandpa::Equivocation::Prevote(equivocation.clone());
+	let equivocation_proof = sp_consensus_grandpa::EquivocationOf::Prevote(equivocation.clone());
 	assert!(matches!(environment.report_equivocation(equivocation_proof), Err(Error::Safety(_))));
 
 	// if we set the equivocation offender to another id for which we don't have
 	// keys it should work
 	equivocation.identity = TryFrom::try_from(&[1; 32][..]).unwrap();
-	let equivocation_proof = sp_consensus_grandpa::Equivocation::Prevote(equivocation);
+	let equivocation_proof = sp_consensus_grandpa::EquivocationOf::Prevote(equivocation);
 	environment.report_equivocation(equivocation_proof).unwrap();
 }
 

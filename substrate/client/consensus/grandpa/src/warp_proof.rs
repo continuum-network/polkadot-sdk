@@ -470,12 +470,13 @@ mod tests {
 
 					let msg = finality_grandpa::Message::Precommit(precommit.clone());
 					let encoded = sp_consensus_grandpa::localized_payload(42, current_set_id, &msg);
-					let signature = keyring.sign(&encoded[..]).into();
+					let signature: sp_consensus_grandpa::AuthoritySignature =
+						keyring.sign(&encoded[..]).into();
 
 					let precommit = finality_grandpa::SignedPrecommit {
 						precommit,
 						signature,
-						id: keyring.public().into(),
+						id: sp_consensus_grandpa::AuthorityId::from(keyring.public()),
 					};
 
 					precommits.push(precommit);
