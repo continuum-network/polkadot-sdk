@@ -16,8 +16,11 @@ workspace = true
 [dependencies]
 kvdb = { workspace = true }
 kvdb-rocksdb = { optional = true, workspace = true }
+# Feature-only: aws-lc-fips-sys (rustls FIPS, used by sc-network) builds with bindgen 0.73, which
+# turns on clang-sys `runtime`; librocksdb-sys's bindgen must then load libclang at runtime too.
+librocksdb-sys = { optional = true, features = ["bindgen-runtime"], workspace = true }
 parking_lot = { workspace = true, default-features = true }
 
 [features]
 default = []
-rocksdb = ["kvdb-rocksdb"]
+rocksdb = ["kvdb-rocksdb", "librocksdb-sys"]

@@ -35,8 +35,9 @@ either = { workspace = true, default-features = true }
 fnv = { workspace = true }
 futures = { workspace = true }
 futures-timer = { workspace = true }
+futures-rustls = { workspace = true }
 ip_network = { workspace = true }
-libp2p = { features = ["dns", "identify", "kad", "macros", "mdns", "noise", "ping", "request-response", "tcp", "tokio", "websocket", "yamux"], workspace = true }
+libp2p = { features = ["dns", "identify", "kad", "macros", "mdns", "ping", "request-response", "tcp", "tls", "tokio", "websocket", "yamux"], workspace = true }
 linked_hash_set = { workspace = true }
 litep2p = { workspace = true }
 log = { workspace = true, default-features = true }
@@ -46,6 +47,7 @@ partial_sort = { workspace = true }
 pin-project = { workspace = true }
 prometheus-endpoint = { default-features = true, workspace = true }
 prost = { workspace = true }
+rustls = { features = ["aws_lc_rs", "fips"], workspace = true }
 rand = { workspace = true, default-features = true }
 sc-client-api = { default-features = true, workspace = true }
 sc-network-common = { default-features = true, workspace = true }
@@ -69,8 +71,13 @@ zeroize = { workspace = true, default-features = true }
 
 [dev-dependencies]
 assert_matches = { workspace = true }
+aws-lc-fips-sys = { workspace = true }
+aws-lc-rs = { features = ["fips"], workspace = true }
 cid = { workspace = true }
+# Noise is only used by behaviour tests and the Noise-rejection test.
+libp2p = { features = ["noise"], workspace = true }
 multistream-select = { workspace = true }
+rcgen = { workspace = true }
 sc-block-builder = { default-features = true, workspace = true }
 sp-consensus = { default-features = true, workspace = true }
 sp-crypto-hashing = { default-features = true, workspace = true }
@@ -78,6 +85,7 @@ sp-tracing = { default-features = true, workspace = true }
 substrate-test-runtime = { workspace = true }
 substrate-test-runtime-client = { workspace = true }
 tempfile = { workspace = true }
+yasna = { workspace = true }
 tokio = { features = ["macros", "rt-multi-thread"], workspace = true, default-features = true }
 tokio-util = { features = ["compat"], workspace = true }
 

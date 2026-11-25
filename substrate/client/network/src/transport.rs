@@ -25,7 +25,7 @@ use libp2p::{
 		transport::{Boxed, OptionalTransport},
 		upgrade,
 	},
-	dns, identity, noise, tcp, websocket, PeerId, Transport, TransportExt,
+	dns, identity, tcp, websocket, PeerId, Transport, TransportExt,
 };
 use std::{sync::Arc, time::Duration};
 
@@ -73,7 +73,9 @@ pub fn build_transport(
 		Either::Right(OptionalTransport::some(libp2p::core::transport::MemoryTransport::default()))
 	};
 
-	let authentication_config = noise::Config::new(&keypair).expect("Can create noise config. qed");
+	// TLS 1.3 with hybrid post-quantum key exchange only; see `crate::pq_tls`.
+	let authentication_config =
+		crate::pq_tls::Config::new(&keypair).expect("Can create TLS config. qed");
 	let multiplexing_config = libp2p::yamux::Config::default();
 
 	let transport = transport

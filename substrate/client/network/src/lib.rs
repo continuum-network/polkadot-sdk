@@ -82,8 +82,10 @@
 //! node's address can contain a domain name.
 //! - (All of the above using IPv6 instead of IPv4.)
 //!
-//! On top of the base-layer protocol, the [Noise](https://noiseprotocol.org/) protocol is
-//! negotiated and applied. The exact handshake protocol is experimental and is subject to change.
+//! On top of the base-layer protocol, libp2p TLS 1.3 (`/tls/1.0.0`) is negotiated and applied,
+//! restricted to the hybrid post-quantum key exchange groups X25519MLKEM768 and
+//! SECP256R1MLKEM768 (aws-lc-rs provider). Peers without them, or offering only Noise, are
+//! rejected.
 //!
 //! The following multiplexing protocols are supported:
 //!
@@ -245,6 +247,7 @@
 mod behaviour;
 mod bitswap;
 mod litep2p;
+mod pq_tls;
 mod protocol;
 
 #[cfg(test)]
