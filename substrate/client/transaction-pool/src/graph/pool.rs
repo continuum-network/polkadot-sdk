@@ -799,6 +799,34 @@ mod tests {
 		assert_eq!(it.next(), None);
 	}
 
+	/// A transaction promoted from the future queue is notified as well: the network propagates
+	/// notified transactions right away, and a nonce chain submitted out of order must not wait
+	/// for the periodic propagation round.
+	#[test]
+	fn should_notify_about_promoted_transactions() {
+		let (pool, api) = pool();
+		let han_of_block0 = api.expect_hash_and_number(0);
+		let stream = pool.validated_pool().import_notification_stream();
+		let submit = |nonce| {
+			let xt = uxt(Transfer {
+				from: Alice.into(),
+				to: AccountId::from_h256(H256::from_low_u64_be(2)),
+				amount: 5,
+				nonce,
+			});
+			block_on(pool.submit_one(&han_of_block0, SOURCE, xt.into())).unwrap().hash()
+		};
+
+		let hash1 = submit(1);
+		assert_eq!(pool.validated_pool().status().future, 1);
+		let hash0 = submit(0);
+		assert_eq!(pool.validated_pool().status().ready, 2);
+		drop(pool);
+
+		let notified: Vec<_> = futures::executor::block_on_stream(stream).collect();
+		assert_eq!(notified, vec![hash0, hash1]);
+	}
+
 	#[test]
 	fn should_clear_stale_transactions() {
 		// given

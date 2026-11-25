@@ -345,23 +345,27 @@ impl<B: ChainApi, L: EventHandler<B>> ValidatedPool<B, L> {
 
 				let imported = self.pool.write().import(tx)?;
 
-				if let base::Imported::Ready { ref hash, .. } = imported {
+				// Promoted txs are ready too; unnotified, an out-of-order nonce chain waits for the
+				// periodic (capped) propagation round and peers hold the rest of it as future.
+				if let base::Imported::Ready { ref hash, ref promoted, .. } = imported {
 					let sinks = &mut self.import_notification_sinks.lock();
-					sinks.retain_mut(|sink| match sink.try_send(*hash) {
-						Ok(()) => true,
-						Err(e) => {
-							if e.is_full() {
-								warn!(
-									target: LOG_TARGET,
-									tx_hash = ?hash,
-									"Trying to notify an import but the channel is full"
-								);
-								true
-							} else {
-								false
-							}
-						},
-					});
+					for hash in std::iter::once(hash).chain(promoted) {
+						sinks.retain_mut(|sink| match sink.try_send(*hash) {
+							Ok(()) => true,
+							Err(e) => {
+								if e.is_full() {
+									warn!(
+										target: LOG_TARGET,
+										tx_hash = ?hash,
+										"Trying to notify an import but the channel is full"
+									);
+									true
+								} else {
+									false
+								}
+							},
+						});
+					}
 				}
 
 				let mut event_dispatcher = self.event_dispatcher.write();
