@@ -16,24 +16,28 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! libp2p TLS 1.3 security upgrade restricted to hybrid post-quantum key exchange.
+//! libp2p TLS 1.3 security upgrade with post-quantum key exchange and authentication.
 //!
-//! The wire protocol (`/tls/1.0.0`, ALPN `libp2p`, one self-signed certificate whose libp2p
-//! extension is signed by the node identity key) is the libp2p TLS spec, and the identity
-//! binding reuses `libp2p::tls::certificate` unchanged. `libp2p::tls::Config` hard-codes the
-//! ring provider with classical key exchange, so the rustls configs are built here instead:
-//! the aws-lc-rs (FIPS) provider is passed explicitly, only hybrid ML-KEM groups are offered
-//! or accepted, and there is no fallback.
+//! - Key exchange: only the hybrid ML-KEM groups X25519MLKEM768 / SECP256R1MLKEM768.
+//! - Authentication: only ML-DSA-65 (TLS `SignatureScheme` 0x0905). The node's ML-DSA-65 identity
+//!   key is the certificate key: each side presents a minimal self-signed X.509 certificate whose
+//!   subject public key IS the identity key, and proves possession by signing CertificateVerify
+//!   with it. The peer ID is derived from that public key, so no libp2p certificate extension is
+//!   needed. Certificates or handshake signatures of any other algorithm are rejected.
+//! - All TLS cryptography runs in aws-lc-rs (FIPS build), passed explicitly to rustls. There is no
+//!   classical fallback, and the upgrade is not interoperable with stock libp2p-tls or Noise.
 
+use ::aws_lc_rs::signature::{
+	KeyPair as _, PqdsaKeyPair, UnparsedPublicKey, ML_DSA_65, ML_DSA_65_SIGNING,
+};
 use futures::{future::BoxFuture, AsyncRead, AsyncWrite, FutureExt};
+use futures_rustls::TlsStream;
 use libp2p::{
 	core::{
 		upgrade::{InboundConnectionUpgrade, OutboundConnectionUpgrade},
 		UpgradeInfo,
 	},
-	identity,
-	tls::{certificate, TlsStream},
-	PeerId,
+	identity, PeerId,
 };
 use rustls::{
 	client::{
@@ -41,25 +45,38 @@ use rustls::{
 		Resumption,
 	},
 	crypto::{aws_lc_rs, CryptoProvider, SupportedKxGroup},
-	pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime},
+	pki_types::{CertificateDer, ServerName, UnixTime},
 	server::{
 		danger::{ClientCertVerified, ClientCertVerifier},
 		NoServerSessionStorage,
 	},
-	sign::{CertifiedKey, SingleCertAndKey},
+	sign::{CertifiedKey, Signer, SigningKey, SingleCertAndKey},
 	CertificateError, ClientConfig, CommonState, DigitallySignedStruct, DistinguishedName,
-	OtherError, ServerConfig, SignatureScheme,
+	OtherError, ServerConfig, SignatureAlgorithm, SignatureScheme,
 };
 use std::{
 	net::{IpAddr, Ipv4Addr},
 	sync::Arc,
 };
+use x509_parser::der_parser::oid::Oid;
 
 const LOG_TARGET: &str = "sub-libp2p::tls";
 
 /// The only key exchange groups offered or accepted, in preference order.
 pub(crate) static KX_GROUPS: &[&dyn SupportedKxGroup] =
 	&[aws_lc_rs::kx_group::X25519MLKEM768, aws_lc_rs::kx_group::SECP256R1MLKEM768];
+
+/// The only handshake signature scheme offered or accepted.
+const SCHEME: SignatureScheme = SignatureScheme::ML_DSA_65;
+/// id-ml-dsa-65 (FIPS 204, RFC 9881), with absent parameters.
+const ID_ML_DSA_65: [u64; 9] = [2, 16, 840, 1, 101, 3, 4, 3, 18];
+const PUBLIC_KEY_LEN: usize = 1952;
+const SIGNATURE_LEN: usize = 3309;
+/// Upper bound on a peer certificate; ours are about 5.3 KB.
+const MAX_CERTIFICATE_LEN: usize = 8 * 1024;
+/// UTCTime 1970-01-01 and GeneralizedTime 9999-12-31 ("no expiration", RFC 5280 4.1.2.5).
+const NOT_BEFORE: &[u8] = b"\x17\x0d700101000000Z";
+const NOT_AFTER: &[u8] = b"\x18\x0f99991231235959Z";
 
 /// The explicit rustls provider: aws-lc-rs, TLS 1.3 AES-GCM suites, hybrid PQ groups only.
 pub(crate) fn provider() -> CryptoProvider {
@@ -76,24 +93,26 @@ pub(crate) fn provider() -> CryptoProvider {
 /// Errors of the TLS security upgrade.
 #[derive(Debug, thiserror::Error)]
 pub enum UpgradeError {
-	/// Generating the certificate failed.
-	#[error("Failed to generate certificate: {0}")]
-	CertificateGeneration(#[from] certificate::GenError),
 	/// Building the rustls configuration failed.
 	#[error("Failed to build TLS config: {0}")]
 	Config(#[from] rustls::Error),
-	/// The handshake failed (for instance, the peer offers no hybrid post-quantum group).
+	/// The handshake failed (for instance, no hybrid group or ML-DSA-65 signature in common).
 	#[error("TLS handshake failed: {0}")]
 	Handshake(std::io::Error),
-	/// The peer certificate is invalid.
-	#[error("Invalid peer certificate: {0}")]
-	BadCertificate(#[from] certificate::ParseError),
+	/// The peer certificate or the local identity is not acceptable.
+	#[error("Invalid certificate: {0}")]
+	BadCertificate(#[from] BadCertificate),
 	/// The negotiated connection does not satisfy the security policy.
 	#[error("TLS policy violation: {0}")]
 	Policy(&'static str),
 }
 
-/// libp2p TLS security upgrade with hybrid post-quantum key exchange.
+/// A certificate (or identity key) rejected by the ML-DSA-65 policy.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct BadCertificate(&'static str);
+
+/// libp2p TLS security upgrade with hybrid PQ key exchange and ML-DSA-65 authentication.
 #[derive(Clone)]
 pub struct Config {
 	server: Arc<ServerConfig>,
@@ -101,30 +120,30 @@ pub struct Config {
 }
 
 impl Config {
-	/// Creates a config whose certificate is bound to `identity`.
+	/// Creates a config authenticating with the ML-DSA-65 node `identity`.
 	pub fn new(identity: &identity::Keypair) -> Result<Self, UpgradeError> {
-		let (cert, key) = certificate::generate(identity)?;
-		Ok(Self::with_certificate(cert, key)?)
+		let key = identity_signing_key(identity)?;
+		let cert = self_signed_certificate(&key)?;
+		Ok(Self::with_key(cert, Arc::new(key))?)
 	}
 
-	/// Creates a config presenting `cert`, which must be a libp2p TLS certificate for `key`.
-	pub(crate) fn with_certificate(
+	/// Creates a config presenting `cert` and signing CertificateVerify with `key`.
+	pub(crate) fn with_key(
 		cert: CertificateDer<'static>,
-		key: PrivateKeyDer<'static>,
+		key: Arc<PqdsaKeyPair>,
 	) -> Result<Self, rustls::Error> {
-		Self::with_provider(cert, key, provider())
+		Self::build(provider(), Arc::new(MlDsa65Verifier), Arc::new(MlDsa65Key(key)), cert)
 	}
 
-	fn with_provider(
-		cert: CertificateDer<'static>,
-		key: PrivateKeyDer<'static>,
+	fn build<V: ServerCertVerifier + ClientCertVerifier + 'static>(
 		provider: CryptoProvider,
+		verifier: Arc<V>,
+		key: Arc<dyn SigningKey>,
+		cert: CertificateDer<'static>,
 	) -> Result<Self, rustls::Error> {
 		let provider = Arc::new(provider);
-		let verifier = Arc::new(Libp2pCertificateVerifier);
-		// Not `with_single_cert`: webpki rejects the critical libp2p extension.
-		let signing_key = provider.key_provider.load_private_key(key)?;
-		let resolver = Arc::new(SingleCertAndKey::from(CertifiedKey::new(vec![cert], signing_key)));
+		// Not `with_single_cert`: that would parse the certificate with webpki.
+		let resolver = Arc::new(SingleCertAndKey::from(CertifiedKey::new(vec![cert], key)));
 
 		let mut server = ServerConfig::builder_with_provider(provider.clone())
 			.with_protocol_versions(&[&rustls::version::TLS13])?
@@ -145,6 +164,146 @@ impl Config {
 
 		Ok(Self { server: Arc::new(server), client: Arc::new(client) })
 	}
+}
+
+/// Loads the ML-DSA-65 identity secret key into aws-lc-rs.
+fn identity_signing_key(identity: &identity::Keypair) -> Result<PqdsaKeyPair, BadCertificate> {
+	let identity = identity
+		.clone()
+		.try_into_mldsa65()
+		.map_err(|_| BadCertificate("node identity must be ML-DSA-65"))?;
+	let secret = identity
+		.secret()
+		.as_ref()
+		.get(..identity::mldsa65::SECRET_KEY_LENGTH)
+		.ok_or(BadCertificate("short ML-DSA-65 identity secret key"))?;
+	let key = PqdsaKeyPair::from_raw_private_key(&ML_DSA_65_SIGNING, secret)
+		.map_err(|_| BadCertificate("aws-lc rejected the ML-DSA-65 identity secret key"))?;
+	if key.public_key().as_ref() != identity.public().to_bytes() {
+		return Err(BadCertificate("ML-DSA-65 identity public key does not match its secret key"));
+	}
+	Ok(key)
+}
+
+fn sign(key: &PqdsaKeyPair, message: &[u8]) -> Result<Vec<u8>, rustls::Error> {
+	let mut signature = vec![0; SIGNATURE_LEN];
+	match key.sign(message, &mut signature) {
+		Ok(SIGNATURE_LEN) => Ok(signature),
+		_ => Err(rustls::Error::General("ML-DSA-65 signing failed".into())),
+	}
+}
+
+fn write_algorithm(writer: yasna::DERWriter) {
+	writer.write_sequence(|w| {
+		w.next().write_oid(&yasna::models::ObjectIdentifier::from_slice(&ID_ML_DSA_65))
+	});
+}
+
+/// Builds a minimal self-signed X.509 v1 certificate for the ML-DSA-65 `key`.
+pub(crate) fn self_signed_certificate(
+	key: &PqdsaKeyPair,
+) -> Result<CertificateDer<'static>, rustls::Error> {
+	let public_key = key.public_key().as_ref();
+	let tbs = yasna::construct_der(|w| {
+		w.write_sequence(|w| {
+			w.next().write_u8(1); // serialNumber
+			write_algorithm(w.next());
+			w.next().write_sequence(|_| ()); // issuer: empty Name
+			w.next().write_sequence(|w| {
+				w.next().write_der(NOT_BEFORE);
+				w.next().write_der(NOT_AFTER);
+			});
+			w.next().write_sequence(|_| ()); // subject: empty Name
+			w.next().write_sequence(|w| {
+				write_algorithm(w.next());
+				w.next().write_bitvec_bytes(public_key, public_key.len() * 8);
+			});
+		})
+	});
+	let signature = sign(key, &tbs)?;
+	Ok(yasna::construct_der(|w| {
+		w.write_sequence(|w| {
+			w.next().write_der(&tbs);
+			write_algorithm(w.next());
+			w.next().write_bitvec_bytes(&signature, signature.len() * 8);
+		})
+	})
+	.into())
+}
+
+/// Checks that `der` is a self-signed ML-DSA-65 certificate within the size limits and returns
+/// its raw public key.
+pub(crate) fn parse_certificate(der: &[u8]) -> Result<Vec<u8>, BadCertificate> {
+	if der.len() > MAX_CERTIFICATE_LEN {
+		return Err(BadCertificate("certificate too large"));
+	}
+	let (rest, cert) = x509_parser::parse_x509_certificate(der)
+		.map_err(|_| BadCertificate("malformed certificate"))?;
+	if !rest.is_empty() {
+		return Err(BadCertificate("trailing data after certificate"));
+	}
+	let ml_dsa_65 = Oid::from(&ID_ML_DSA_65).expect("valid OID; qed");
+	let spki = &cert.tbs_certificate.subject_pki;
+	for alg in [&cert.signature_algorithm, &cert.tbs_certificate.signature, &spki.algorithm] {
+		if alg.algorithm != ml_dsa_65 || alg.parameters.is_some() {
+			return Err(BadCertificate("certificate key or signature is not ML-DSA-65"));
+		}
+	}
+	let public_key = spki.subject_public_key.data.as_ref();
+	let signature = cert.signature_value.data.as_ref();
+	if public_key.len() != PUBLIC_KEY_LEN || signature.len() != SIGNATURE_LEN {
+		return Err(BadCertificate("bad ML-DSA-65 key or signature length"));
+	}
+	if !cert.extensions().is_empty() {
+		return Err(BadCertificate("unexpected certificate extensions"));
+	}
+	if !cert.validity().is_valid() {
+		return Err(BadCertificate("certificate not valid now"));
+	}
+	UnparsedPublicKey::new(&ML_DSA_65, public_key)
+		.verify(cert.tbs_certificate.as_ref(), signature)
+		.map_err(|_| BadCertificate("bad certificate self-signature"))?;
+	Ok(public_key.to_vec())
+}
+
+/// The peer ID bound to an ML-DSA-65 certificate public key.
+fn peer_id(public_key: &[u8]) -> Result<PeerId, BadCertificate> {
+	let key = identity::mldsa65::PublicKey::try_from_bytes(public_key)
+		.map_err(|_| BadCertificate("invalid ML-DSA-65 public key"))?;
+	Ok(identity::PublicKey::from(key).to_peer_id())
+}
+
+/// rustls signing key for the ML-DSA-65 identity: offers only the ML-DSA-65 scheme.
+#[derive(Debug)]
+struct MlDsa65Key(Arc<PqdsaKeyPair>);
+
+impl SigningKey for MlDsa65Key {
+	fn choose_scheme(&self, offered: &[SignatureScheme]) -> Option<Box<dyn Signer>> {
+		offered
+			.contains(&SCHEME)
+			.then(|| Box::new(MlDsa65Key(self.0.clone())) as Box<dyn Signer>)
+	}
+
+	fn algorithm(&self) -> SignatureAlgorithm {
+		// No TLS 1.2 `SignatureAlgorithm` exists for ML-DSA (rustls uses the same placeholder).
+		SignatureAlgorithm::Unknown(0)
+	}
+}
+
+impl Signer for MlDsa65Key {
+	fn sign(&self, message: &[u8]) -> Result<Vec<u8>, rustls::Error> {
+		sign(&self.0, message)
+	}
+
+	fn scheme(&self) -> SignatureScheme {
+		SCHEME
+	}
+}
+
+#[cfg(test)]
+thread_local! {
+	/// Test hook: CertificateVerify signatures verified with ML-DSA-65 on this thread.
+	pub(crate) static MLDSA65_VERIFICATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 impl UpgradeInfo for Config {
@@ -204,7 +363,7 @@ fn handshake_failed(direction: &str, e: std::io::Error) -> UpgradeError {
 	log::debug!(
 		target: LOG_TARGET,
 		"Rejected {direction} TLS connection: {e} (TLS 1.3 with hybrid post-quantum key \
-		 exchange X25519MLKEM768/SECP256R1MLKEM768 and a valid libp2p certificate required)",
+		 exchange X25519MLKEM768/SECP256R1MLKEM768 and an ML-DSA-65 certificate required)",
 	);
 	UpgradeError::Handshake(e)
 }
@@ -222,30 +381,28 @@ fn authenticated_peer(state: &CommonState) -> Result<PeerId, UpgradeError> {
 	let Some([cert]) = state.peer_certificates() else {
 		return Err(UpgradeError::Policy("expected exactly one peer certificate"));
 	};
-	let peer_id = certificate::parse(cert)?.peer_id();
-	log::debug!(target: LOG_TARGET, "TLS handshake with {peer_id} negotiated {group:?}");
+	let peer_id = peer_id(&parse_certificate(cert)?)?;
+	log::debug!(
+		target: LOG_TARGET,
+		"TLS handshake with {peer_id} negotiated {group:?}, authenticated with ML-DSA-65",
+	);
 	Ok(peer_id)
 }
 
-/// Verifies the libp2p TLS certificate of the remote, as `libp2p-tls` does. The expected peer
-/// ID is checked by the swarm after the upgrade.
+/// Accepts exactly one self-signed ML-DSA-65 certificate and ML-DSA-65 CertificateVerify
+/// signatures by its key. The expected peer ID is checked by the swarm after the upgrade.
 #[derive(Debug)]
-struct Libp2pCertificateVerifier;
+struct MlDsa65Verifier;
 
-impl Libp2pCertificateVerifier {
+impl MlDsa65Verifier {
 	fn verify_presented_certs(
 		end_entity: &CertificateDer,
 		intermediates: &[CertificateDer],
 	) -> Result<(), rustls::Error> {
 		if !intermediates.is_empty() {
-			return Err(rustls::Error::General(
-				"libp2p-tls requires exactly one certificate".into(),
-			));
+			return Err(rustls::Error::General("exactly one certificate required".into()));
 		}
-		// Checks validity, the self-signature and the identity-key signature of the extension.
-		certificate::parse(end_entity).map_err(|e| {
-			rustls::Error::InvalidCertificate(CertificateError::Other(OtherError(Arc::new(e))))
-		})?;
+		parse_certificate(end_entity).map_err(invalid_certificate)?;
 		Ok(())
 	}
 
@@ -254,26 +411,30 @@ impl Libp2pCertificateVerifier {
 		cert: &CertificateDer,
 		dss: &DigitallySignedStruct,
 	) -> Result<HandshakeSignatureValid, rustls::Error> {
-		certificate::parse(cert)
-			.map_err(|e| {
-				rustls::Error::InvalidCertificate(CertificateError::Other(OtherError(Arc::new(e))))
-			})?
-			.verify_signature(dss.scheme, message, dss.signature())
+		if dss.scheme != SCHEME {
+			return Err(rustls::Error::PeerIncompatible(
+				rustls::PeerIncompatible::NoSignatureSchemesInCommon,
+			));
+		}
+		let public_key = parse_certificate(cert).map_err(invalid_certificate)?;
+		UnparsedPublicKey::new(&ML_DSA_65, &public_key)
+			.verify(message, dss.signature())
 			.map_err(|_| rustls::Error::InvalidCertificate(CertificateError::BadSignature))?;
+		#[cfg(test)]
+		MLDSA65_VERIFICATIONS.with(|c| c.set(c.get() + 1));
 		Ok(HandshakeSignatureValid::assertion())
 	}
 
 	fn tls12_rejected() -> Result<HandshakeSignatureValid, rustls::Error> {
 		Err(rustls::Error::General("TLS 1.2 is not supported".into()))
 	}
-
-	/// `libp2p::tls::certificate::generate` always uses an ECDSA P-256 certificate key.
-	fn schemes() -> Vec<SignatureScheme> {
-		vec![SignatureScheme::ECDSA_NISTP256_SHA256]
-	}
 }
 
-impl ServerCertVerifier for Libp2pCertificateVerifier {
+fn invalid_certificate(e: BadCertificate) -> rustls::Error {
+	rustls::Error::InvalidCertificate(CertificateError::Other(OtherError(Arc::new(e))))
+}
+
+impl ServerCertVerifier for MlDsa65Verifier {
 	fn verify_server_cert(
 		&self,
 		end_entity: &CertificateDer,
@@ -305,11 +466,11 @@ impl ServerCertVerifier for Libp2pCertificateVerifier {
 	}
 
 	fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-		Self::schemes()
+		vec![SCHEME]
 	}
 }
 
-impl ClientCertVerifier for Libp2pCertificateVerifier {
+impl ClientCertVerifier for MlDsa65Verifier {
 	fn offer_client_auth(&self) -> bool {
 		true
 	}
@@ -351,7 +512,7 @@ impl ClientCertVerifier for Libp2pCertificateVerifier {
 	}
 
 	fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-		Self::schemes()
+		vec![SCHEME]
 	}
 }
 
@@ -368,13 +529,19 @@ mod tests {
 		identity::Keypair,
 		noise, Multiaddr, Transport,
 	};
-	use rustls::pki_types::PrivatePkcs8KeyDer;
+	use rustls::pki_types::PrivateKeyDer;
 	use std::pin::Pin;
 
 	const PROTO: &str = "/tls/1.0.0";
 
 	fn mldsa() -> Keypair {
 		Keypair::generate_mldsa65()
+	}
+
+	/// The certificate and aws-lc signing key `Config::new` would use for `identity`.
+	fn credentials(identity: &Keypair) -> (CertificateDer<'static>, Arc<PqdsaKeyPair>) {
+		let key = identity_signing_key(identity).unwrap();
+		(self_signed_certificate(&key).unwrap(), Arc::new(key))
 	}
 
 	/// Runs a server and a client upgrade against each other over a local TCP socket pair.
@@ -398,6 +565,14 @@ mod tests {
 		)
 	}
 
+	/// Asserts `honest` rejects `attacker` both as server and as client.
+	async fn rejected_both_ways(attacker: Config) {
+		let (s, _) = handshake(Config::new(&mldsa()).unwrap(), attacker.clone()).await;
+		assert!(matches!(s, Err(UpgradeError::Handshake(_))), "server accepted attacker: {s:?}");
+		let (_, c) = handshake(attacker, Config::new(&mldsa()).unwrap()).await;
+		assert!(matches!(c, Err(UpgradeError::Handshake(_))), "client accepted attacker: {c:?}");
+	}
+
 	fn group<C>(stream: &TlsStream<C>) -> &'static str {
 		let state: &CommonState = match stream {
 			TlsStream::Client(s) => s.get_ref().1,
@@ -406,41 +581,104 @@ mod tests {
 		state.negotiated_key_exchange_group().unwrap().name().as_str().unwrap()
 	}
 
-	/// A libp2p TLS certificate claiming `claimed`'s identity, with the extension signed by
-	/// `signer` (mirrors `libp2p_tls::certificate::generate`).
-	fn certificate(
-		claimed: &Keypair,
-		signer: &Keypair,
-	) -> (CertificateDer<'static>, PrivateKeyDer<'static>) {
-		let cert_key = rcgen::KeyPair::generate(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
-		let mut msg = b"libp2p-tls-handshake:".to_vec();
-		msg.extend(cert_key.public_key_der());
-		let content =
-			yasna::encode_der(&(claimed.public().encode_protobuf(), signer.sign(&msg).unwrap()));
-		let mut ext =
-			rcgen::CustomExtension::from_oid_content(&[1, 3, 6, 1, 4, 1, 53594, 1, 1], content);
-		ext.set_criticality(true);
-		let key = PrivatePkcs8KeyDer::from(cert_key.serialize_der()).into();
-		let mut params = rcgen::CertificateParams::new(vec![]);
-		params.distinguished_name = rcgen::DistinguishedName::new();
-		params.custom_extensions.push(ext);
-		params.alg = &rcgen::PKCS_ECDSA_P256_SHA256;
-		params.key_pair = Some(cert_key);
-		let cert = rcgen::Certificate::from_params(params).unwrap();
-		(cert.serialize_der().unwrap().into(), key)
+	/// A misbehaving peer: hybrid key exchange, but it trusts any certificate, offers
+	/// `schemes`, and presents `cert` while signing with `key`.
+	#[derive(Debug)]
+	struct TrustAll(Vec<SignatureScheme>);
+
+	impl ServerCertVerifier for TrustAll {
+		fn verify_server_cert(
+			&self,
+			_: &CertificateDer,
+			_: &[CertificateDer],
+			_: &ServerName,
+			_: &[u8],
+			_: UnixTime,
+		) -> Result<ServerCertVerified, rustls::Error> {
+			Ok(ServerCertVerified::assertion())
+		}
+		fn verify_tls12_signature(
+			&self,
+			_: &[u8],
+			_: &CertificateDer,
+			_: &DigitallySignedStruct,
+		) -> Result<HandshakeSignatureValid, rustls::Error> {
+			Ok(HandshakeSignatureValid::assertion())
+		}
+		fn verify_tls13_signature(
+			&self,
+			_: &[u8],
+			_: &CertificateDer,
+			_: &DigitallySignedStruct,
+		) -> Result<HandshakeSignatureValid, rustls::Error> {
+			Ok(HandshakeSignatureValid::assertion())
+		}
+		fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+			self.0.clone()
+		}
 	}
 
-	fn classical_x25519(identity: &Keypair) -> Config {
-		let (cert, key) = certificate::generate(identity).unwrap();
-		let provider =
-			CryptoProvider { kx_groups: vec![aws_lc_rs::kx_group::X25519], ..provider() };
-		Config::with_provider(cert, key, provider).unwrap()
+	impl ClientCertVerifier for TrustAll {
+		fn root_hint_subjects(&self) -> &[DistinguishedName] {
+			&[]
+		}
+		fn verify_client_cert(
+			&self,
+			_: &CertificateDer,
+			_: &[CertificateDer],
+			_: UnixTime,
+		) -> Result<ClientCertVerified, rustls::Error> {
+			Ok(ClientCertVerified::assertion())
+		}
+		fn verify_tls12_signature(
+			&self,
+			_: &[u8],
+			_: &CertificateDer,
+			_: &DigitallySignedStruct,
+		) -> Result<HandshakeSignatureValid, rustls::Error> {
+			Ok(HandshakeSignatureValid::assertion())
+		}
+		fn verify_tls13_signature(
+			&self,
+			_: &[u8],
+			_: &CertificateDer,
+			_: &DigitallySignedStruct,
+		) -> Result<HandshakeSignatureValid, rustls::Error> {
+			Ok(HandshakeSignatureValid::assertion())
+		}
+		fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+			self.0.clone()
+		}
+	}
+
+	fn attacker(
+		cert: CertificateDer<'static>,
+		key: Arc<dyn SigningKey>,
+		schemes: Vec<SignatureScheme>,
+	) -> Config {
+		Config::build(provider(), Arc::new(TrustAll(schemes)), key, cert).unwrap()
+	}
+
+	fn mldsa_key(key: Arc<PqdsaKeyPair>) -> Arc<dyn SigningKey> {
+		Arc::new(MlDsa65Key(key))
+	}
+
+	/// Stock libp2p-tls certificate: ephemeral P-256 key, identity in the libp2p extension.
+	fn p256_certificate() -> (CertificateDer<'static>, PrivateKeyDer<'static>) {
+		libp2p::tls::certificate::generate(&mldsa()).unwrap()
+	}
+
+	fn ed25519_certificate() -> CertificateDer<'static> {
+		let mut params = rcgen::CertificateParams::new(vec![]);
+		params.alg = &rcgen::PKCS_ED25519;
+		rcgen::Certificate::from_params(params).unwrap().serialize_der().unwrap().into()
 	}
 
 	#[tokio::test]
-	async fn handshake_negotiates_hybrid_group_and_binds_mldsa_identity() {
+	async fn handshake_uses_hybrid_group_and_mldsa65_signatures() {
 		sp_tracing::try_init_simple();
 		let (server_id, client_id) = (mldsa(), mldsa());
+		let before = MLDSA65_VERIFICATIONS.with(|c| c.get());
 		let (s, c) =
 			handshake(Config::new(&server_id).unwrap(), Config::new(&client_id).unwrap()).await;
 		let ((peer_seen_by_server, s), (peer_seen_by_client, c)) = (s.unwrap(), c.unwrap());
@@ -448,58 +686,128 @@ mod tests {
 		assert_eq!(peer_seen_by_client, server_id.public().to_peer_id());
 		assert_eq!(group(&s), "X25519MLKEM768");
 		assert_eq!(group(&c), "X25519MLKEM768");
+		// Both CertificateVerify messages were ML-DSA-65 and verified (the verifier refuses any
+		// other scheme before counting).
+		assert_eq!(MLDSA65_VERIFICATIONS.with(|c| c.get()) - before, 2);
+	}
+
+	#[test]
+	fn certificate_is_mldsa65_identity_key_within_limits() {
+		let id = mldsa();
+		let (cert, _) = credentials(&id);
+		assert!(cert.len() < MAX_CERTIFICATE_LEN, "{}", cert.len());
+		let public_key = parse_certificate(&cert).unwrap();
+		assert_eq!(public_key, id.public().try_into_mldsa65().unwrap().to_bytes());
+		assert_eq!(peer_id(&public_key).unwrap(), id.public().to_peer_id());
+		let mut long = cert.to_vec();
+		long.resize(MAX_CERTIFICATE_LEN + 1, 0);
+		assert!(parse_certificate(&long).is_err());
+		let mut trailing = cert.to_vec();
+		trailing.push(0);
+		assert!(parse_certificate(&trailing).is_err());
+	}
+
+	#[test]
+	fn classical_certificates_are_rejected_by_verifier() {
+		let p256 = p256_certificate().0;
+		let ed25519 = ed25519_certificate();
+		for cert in [&p256, &ed25519] {
+			assert!(parse_certificate(cert).is_err());
+			assert!(MlDsa65Verifier::verify_presented_certs(cert, &[]).is_err());
+		}
+	}
+
+	#[tokio::test]
+	async fn peer_with_p256_or_ed25519_certificate_is_rejected() {
+		let (_, mldsa_signer) = credentials(&mldsa());
+		for cert in [p256_certificate().0, ed25519_certificate()] {
+			// Classical certificate, CertificateVerify signed with ML-DSA-65.
+			let all =
+				vec![SCHEME, SignatureScheme::ECDSA_NISTP256_SHA256, SignatureScheme::ED25519];
+			rejected_both_ways(attacker(cert, mldsa_key(mldsa_signer.clone()), all)).await;
+		}
+		// Stock libp2p-tls certificate with its own P-256 key and signatures.
+		let (cert, key) = p256_certificate();
+		let key = provider().key_provider.load_private_key(key).unwrap();
+		let schemes = vec![SignatureScheme::ECDSA_NISTP256_SHA256];
+		rejected_both_ways(attacker(cert, key, schemes)).await;
+	}
+
+	#[tokio::test]
+	async fn peer_offering_only_classical_signature_schemes_is_rejected() {
+		let (cert, key) = credentials(&mldsa());
+		let classical = vec![
+			SignatureScheme::ECDSA_NISTP256_SHA256,
+			SignatureScheme::ED25519,
+			SignatureScheme::RSA_PSS_SHA256,
+		];
+		let attacker = attacker(cert, mldsa_key(key), classical);
+		// As client it offers only classical schemes: the honest server cannot sign and aborts.
+		let (s, _) = handshake(Config::new(&mldsa()).unwrap(), attacker.clone()).await;
+		assert!(matches!(s, Err(UpgradeError::Handshake(_))), "server accepted attacker: {s:?}");
+		// As server it requests classical client signatures: the honest client cannot sign one,
+		// sends no certificate, and no connection is established. (The honest client did verify
+		// the server's genuine ML-DSA-65 certificate and CertificateVerify.)
+		let (s, _) = handshake(attacker, Config::new(&mldsa()).unwrap()).await;
+		assert!(s.is_err());
+		assert!(MlDsa65Key(credentials(&mldsa()).1)
+			.choose_scheme(&[SignatureScheme::ECDSA_NISTP256_SHA256, SignatureScheme::ED25519])
+			.is_none());
+	}
+
+	#[tokio::test]
+	async fn tampered_certificate_is_rejected() {
+		let (cert, key) = credentials(&mldsa());
+		// Last byte of the self-signature, then a byte inside the TBS (validity).
+		for index in [cert.len() - 1, 60] {
+			let mut tampered = cert.to_vec();
+			tampered[index] ^= 1;
+			let tampered = CertificateDer::from(tampered);
+			assert!(parse_certificate(&tampered).is_err());
+			let config = Config::with_key(tampered, key.clone()).unwrap();
+			rejected_both_ways(config).await;
+		}
+	}
+
+	#[tokio::test]
+	async fn identity_mismatch_is_rejected() {
+		// The attacker replays the victim's genuine certificate but holds a different key.
+		let (victim_cert, _) = credentials(&mldsa());
+		let (_, attacker_key) = credentials(&mldsa());
+		rejected_both_ways(Config::with_key(victim_cert, attacker_key).unwrap()).await;
+	}
+
+	#[test]
+	fn non_mldsa_identity_is_refused() {
+		assert!(Config::new(&Keypair::generate_ed25519()).is_err());
+	}
+
+	fn classical_x25519(identity: &Keypair) -> Config {
+		let (cert, key) = credentials(identity);
+		let provider =
+			CryptoProvider { kx_groups: vec![aws_lc_rs::kx_group::X25519], ..provider() };
+		Config::build(provider, Arc::new(MlDsa65Verifier), mldsa_key(key), cert).unwrap()
 	}
 
 	#[tokio::test]
 	async fn classical_x25519_peer_is_rejected() {
 		sp_tracing::try_init_simple();
-		let (s, c) = handshake(Config::new(&mldsa()).unwrap(), classical_x25519(&mldsa())).await;
-		assert!(matches!(s, Err(UpgradeError::Handshake(_))), "server accepted classical client");
-		assert!(c.is_err(), "classical client connected");
-
-		let (s, c) = handshake(classical_x25519(&mldsa()), Config::new(&mldsa()).unwrap()).await;
-		assert!(s.is_err(), "classical server accepted");
-		assert!(matches!(c, Err(UpgradeError::Handshake(_))), "client accepted classical server");
+		rejected_both_ways(classical_x25519(&mldsa())).await;
 	}
 
 	#[tokio::test]
 	async fn stock_libp2p_tls_peer_is_rejected() {
-		// Upstream libp2p-tls: ring provider, classical groups only.
+		// Upstream libp2p-tls: ring provider, classical groups, P-256 certificate.
 		let (s, c) =
 			handshake(Config::new(&mldsa()).unwrap(), libp2p::tls::Config::new(&mldsa()).unwrap())
 				.await;
 		assert!(matches!(s, Err(UpgradeError::Handshake(_))));
 		assert!(c.is_err());
-
 		let (s, c) =
 			handshake(libp2p::tls::Config::new(&mldsa()).unwrap(), Config::new(&mldsa()).unwrap())
 				.await;
 		assert!(s.is_err());
 		assert!(matches!(c, Err(UpgradeError::Handshake(_))));
-	}
-
-	#[tokio::test]
-	async fn tampered_identity_is_rejected() {
-		let (claimed, attacker) = (mldsa(), mldsa());
-
-		// Control: a hand-built certificate signed by the claimed key is accepted.
-		let (cert, key) = certificate(&claimed, &claimed);
-		let (s, c) =
-			handshake(Config::new(&mldsa()).unwrap(), Config::with_certificate(cert, key).unwrap())
-				.await;
-		assert_eq!(s.unwrap().0, claimed.public().to_peer_id());
-		c.unwrap();
-
-		// Extension claims `claimed` but is signed by `attacker`: rejected in both directions.
-		let (cert, key) = certificate(&claimed, &attacker);
-		let tampered = Config::with_certificate(cert, key).unwrap();
-		// TLS 1.3: the client is done before the server checks its certificate, so only the
-		// server side observes this rejection (it aborts the connection with an alert).
-		let (s, _) = handshake(Config::new(&mldsa()).unwrap(), tampered.clone()).await;
-		assert!(matches!(s, Err(UpgradeError::Handshake(_))), "server accepted tampered client");
-		let (s, c) = handshake(tampered, Config::new(&mldsa()).unwrap()).await;
-		assert!(s.is_err());
-		assert!(matches!(c, Err(UpgradeError::Handshake(_))), "client accepted tampered server");
 	}
 
 	type Node = Boxed<(PeerId, StreamMuxerBox)>;

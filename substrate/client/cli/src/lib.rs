@@ -214,6 +214,10 @@ pub trait SubstrateCli: Sized {
 	where
 		F: FnOnce(&mut LoggerBuilder, &Configuration),
 	{
+		// rustls has both the ring and aws-lc-rs providers compiled in, so it cannot choose a
+		// process default itself and `ClientConfig::builder()` callers (e.g. jsonrpsee TLS
+		// clients) would panic. Make aws-lc-rs the default; P2P passes its provider explicitly.
+		let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 		let tokio_runtime = build_runtime()?;
 
 		// `capture` needs to be called in a tokio context.

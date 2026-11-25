@@ -29,6 +29,7 @@ array-bytes = { workspace = true, default-features = true }
 async-channel = { workspace = true }
 async-trait = { workspace = true }
 asynchronous-codec = { workspace = true }
+aws-lc-rs = { features = ["fips"], workspace = true }
 bytes = { workspace = true, default-features = true }
 codec = { features = ["derive"], workspace = true, default-features = true }
 either = { workspace = true, default-features = true }
@@ -37,7 +38,7 @@ futures = { workspace = true }
 futures-timer = { workspace = true }
 futures-rustls = { workspace = true }
 ip_network = { workspace = true }
-libp2p = { features = ["dns", "identify", "kad", "macros", "mdns", "ping", "request-response", "tcp", "tls", "tokio", "websocket", "yamux"], workspace = true }
+libp2p = { features = ["dns", "identify", "kad", "macros", "mdns", "ping", "request-response", "tcp", "tokio", "websocket", "yamux"], workspace = true }
 linked_hash_set = { workspace = true }
 litep2p = { workspace = true }
 log = { workspace = true, default-features = true }
@@ -67,15 +68,16 @@ tokio-stream = { workspace = true }
 unsigned-varint = { features = ["asynchronous_codec", "futures"], workspace = true }
 void = { workspace = true }
 wasm-timer = { workspace = true }
+x509-parser = { workspace = true }
+yasna = { workspace = true }
 zeroize = { workspace = true, default-features = true }
 
 [dev-dependencies]
 assert_matches = { workspace = true }
 aws-lc-fips-sys = { workspace = true }
-aws-lc-rs = { features = ["fips"], workspace = true }
 cid = { workspace = true }
-# Noise is only used by behaviour tests and the Noise-rejection test.
-libp2p = { features = ["noise"], workspace = true }
+# Noise and stock libp2p-tls are only used by tests (behaviour tests, rejection tests).
+libp2p = { features = ["noise", "tls"], workspace = true }
 multistream-select = { workspace = true }
 rcgen = { workspace = true }
 sc-block-builder = { default-features = true, workspace = true }
@@ -85,7 +87,6 @@ sp-tracing = { default-features = true, workspace = true }
 substrate-test-runtime = { workspace = true }
 substrate-test-runtime-client = { workspace = true }
 tempfile = { workspace = true }
-yasna = { workspace = true }
 tokio = { features = ["macros", "rt-multi-thread"], workspace = true, default-features = true }
 tokio-util = { features = ["compat"], workspace = true }
 

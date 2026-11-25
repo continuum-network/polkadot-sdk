@@ -30,6 +30,7 @@ names = { workspace = true }
 rand = { workspace = true, default-features = true }
 regex = { workspace = true }
 rpassword = { workspace = true }
+rustls = { features = ["aws_lc_rs"], workspace = true }
 sc-client-api = { default-features = true, workspace = true }
 sc-client-db = { default-features = false, workspace = true }
 sc-keystore = { default-features = true, workspace = true }

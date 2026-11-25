@@ -20039,6 +20039,7 @@ dependencies = [
  "rand 0.8.5",
  "regex",
  "rpassword",
+ "rustls 0.23.34",
  "sc-client-api 45.0.0",
  "sc-client-db",
  "sc-keystore",
@@ -20837,6 +20838,7 @@ dependencies = [
  "unsigned-varint 0.7.2",
  "void",
  "wasm-timer",
+ "x509-parser 0.17.0",
  "yasna",
  "zeroize",
 ]
