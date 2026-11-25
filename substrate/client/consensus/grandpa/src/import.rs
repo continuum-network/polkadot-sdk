@@ -51,6 +51,57 @@ use crate::{
 	LOG_TARGET,
 };
 
+/// Decode raw runtime authority entries, rejecting malformed or trailing bytes.
+pub(crate) fn decode_raw_authorities<Id: Decode>(
+	raw: &[(Vec<u8>, u64)],
+) -> Result<AuthorityListOf<Id>, ConsensusError> {
+	raw.iter()
+		.map(|(id_bytes, weight)| {
+			Id::decode_all(&mut &id_bytes[..]).map(|id| (id, *weight)).map_err(|e| {
+				ConsensusError::ClientImport(format!(
+					"Failed to decode GRANDPA authority ID from runtime: {e}"
+				))
+			})
+		})
+		.collect()
+}
+
+#[cfg(test)]
+mod decode_raw_authorities_tests {
+	use super::*;
+	use sp_consensus_grandpa::AuthorityId;
+	use sp_core::crypto::ByteArray;
+	use sp_keyring::Ed25519Keyring;
+
+	fn id() -> AuthorityId {
+		Ed25519Keyring::Alice.public().into()
+	}
+
+	#[test]
+	fn rejects_malformed_bytes() {
+		let raw = vec![(vec![1u8, 2, 3], 1u64)];
+		let err = decode_raw_authorities::<AuthorityId>(&raw).unwrap_err();
+		assert_matches::assert_matches!(err, ConsensusError::ClientImport(m) if m.contains("decode GRANDPA authority"));
+	}
+
+	#[test]
+	fn rejects_trailing_garbage() {
+		let mut bytes = id().to_raw_vec();
+		bytes.push(0xff);
+		let raw = vec![(bytes, 1u64)];
+		assert!(matches!(
+			decode_raw_authorities::<AuthorityId>(&raw),
+			Err(ConsensusError::ClientImport(_))
+		));
+	}
+
+	#[test]
+	fn accepts_valid_and_keeps_weights() {
+		let raw = vec![(id().to_raw_vec(), 7u64)];
+		assert_eq!(decode_raw_authorities::<AuthorityId>(&raw).unwrap(), vec![(id(), 7)]);
+	}
+}
+
 /// A block-import handler for GRANDPA.
 ///
 /// This scans each imported block for signals of changing authority set.
@@ -551,17 +602,10 @@ where
 
 				let set_id = self.current_set_id(hash)?;
 
-				// Decode each authority ID from raw bytes
-				let generic_authorities_for_set: AuthorityListOf<Id> = raw_authorities
-					.iter()
-					.map(|(id_bytes, weight)| {
-						Id::decode_all(&mut &id_bytes[..]).map(|id| (id, *weight)).map_err(|e| {
-							ConsensusError::ClientImport(format!(
-								"Failed to decode GRANDPA authority ID from runtime: {e}"
-							))
-						})
-					})
-					.collect::<Result<_, _>>()?;
+				// A decode failure returns here, before `authority_set` is replaced and
+				// before `update_authority_set` writes aux data below, so nothing is persisted.
+				let generic_authorities_for_set: AuthorityListOf<Id> =
+					decode_raw_authorities(&raw_authorities)?;
 
 				// Clone for use in voter command notification
 				let authorities_for_voter = generic_authorities_for_set.clone();

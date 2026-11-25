@@ -561,21 +561,7 @@ where
 						)
 					})?;
 
-				// Then decode each authority ID from raw bytes
-				let authorities: Result<Vec<(Id, u64)>, _> = raw_authorities
-					.into_iter()
-					.map(|(id_bytes, weight)| {
-						let id = Id::decode_all(&mut &id_bytes[..]).map_err(|err| {
-							ClientError::CallResultDecode(
-								"failed to decode GRANDPA authority ID from raw bytes",
-								err,
-							)
-						})?;
-						Ok((id, weight))
-					})
-					.collect();
-
-				authorities
+				import::decode_raw_authorities(&raw_authorities).map_err(ClientError::Consensus)
 			})
 	}
 }
