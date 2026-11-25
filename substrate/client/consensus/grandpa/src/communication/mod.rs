@@ -205,6 +205,13 @@ where
 /// imported as an equivocation: the honest voter is counted as an equivocator for the round
 /// (its weight supports every block), and peers submit equivocation reports that the runtime
 /// rejects as same-target.
+///
+/// Runs after signature verification: network votes reach this stream only once the gossip
+/// validator has checked their signature, and local ones are our own, so an invalid copy can never
+/// shadow a valid one. Memory is per round (the stream is dropped with the round) and bounded by
+/// `MAX_PER_SIGNER` entries per voter; only known voters reach it. Past the cap messages pass
+/// through unrecorded, which is fine: finality-grandpa already ignores a voter after its second
+/// distinct vote in a phase.
 pub(crate) fn dedup_signed_votes<S, H, N, Sig, Id>(
 	stream: S,
 ) -> impl Stream<Item = finality_grandpa::SignedMessage<H, N, Sig, Id>> + Unpin
@@ -214,8 +221,18 @@ where
 	N: Encode,
 	Id: Encode,
 {
-	let mut seen = std::collections::HashSet::new();
-	stream.filter(move |m| future::ready(seen.insert((&m.id, &m.message).encode())))
+	// two distinct votes per phase (propose, prevote, precommit) is all finality-grandpa keeps.
+	const MAX_PER_SIGNER: usize = 6;
+	let mut seen = std::collections::HashMap::<Vec<u8>, Vec<Vec<u8>>>::new();
+	stream.filter(move |m| {
+		let msgs = seen.entry(m.id.encode()).or_default();
+		let msg = m.message.encode();
+		let new = !msgs.contains(&msg);
+		if new && msgs.len() < MAX_PER_SIGNER {
+			msgs.push(msg);
+		}
+		future::ready(new)
+	})
 }
 
 /// Create a unique topic for a round and set-id combo.

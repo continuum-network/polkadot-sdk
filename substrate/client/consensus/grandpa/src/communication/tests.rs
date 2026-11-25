@@ -740,9 +740,22 @@ fn same_vote_with_different_signature_is_not_reimported() {
 		id: id.clone(),
 	};
 
-	let input = vec![signed(1, 1), signed(1, 2), signed(2, 3), signed(1, 4)];
-	let out: Vec<_> = futures::executor::block_on(
-		super::dedup_signed_votes(futures::stream::iter(input.clone())).collect(),
-	);
-	assert_eq!(out, vec![input[0].clone(), input[2].clone()]);
+	let dedup = |input: Vec<_>| -> Vec<_> {
+		futures::executor::block_on(
+			super::dedup_signed_votes(futures::stream::iter(input)).collect(),
+		)
+	};
+
+	// same vote re-signed: only the first copy passes.
+	let input = vec![signed(1, 1), signed(1, 2), signed(1, 4)];
+	assert_eq!(dedup(input.clone()), vec![input[0].clone()]);
+
+	// a real equivocation (different targets, same signer) must still reach the voter.
+	let input = vec![signed(1, 1), signed(2, 2), signed(2, 3)];
+	assert_eq!(dedup(input.clone()), vec![input[0].clone(), input[1].clone()]);
+
+	// past the per-signer cap distinct votes still pass, and recorded ones stay deduplicated.
+	let mut input: Vec<_> = (1..=8).map(|t| signed(t, t)).collect();
+	input.push(signed(1, 99));
+	assert_eq!(dedup(input.clone()), input[..8].to_vec());
 }
