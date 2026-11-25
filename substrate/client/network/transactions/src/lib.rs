@@ -82,8 +82,11 @@ mod rep {
 	/// Reputation change when a peer sends us a bad transaction.
 	pub const BAD_TRANSACTION: Rep = Rep::new(-(1 << 12), "Bad transaction");
 	/// Reputation change for an outdated tx: honest gossip races cost little, but sustained
-	/// replays (each costs us a runtime validation) still add up to a disconnect.
-	pub const OUTDATED_TRANSACTION: Rep = Rep::new(-(1 << 8), "Outdated transaction");
+	/// replays (each costs us a runtime validation) still add up to a ban. With -16 for
+	/// `ANY_TRANSACTION` (not refunded) each costs 1040; decay of 1/200 per second gives a steady
+	/// state of `-200 * 1040 * rate`, so the ban threshold (~-1.52e9) is hit at ~7.3k stale tx/s,
+	/// while an honest 800/s sits at ~11% of it.
+	pub const OUTDATED_TRANSACTION: Rep = Rep::new(-(1 << 10), "Outdated transaction");
 }
 
 struct Metrics {

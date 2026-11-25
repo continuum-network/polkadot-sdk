@@ -496,15 +496,22 @@ where
 /// Maps a pool rejection of a gossiped transaction to the peer reputation outcome.
 fn pool_error_to_import(e: &sc_transaction_pool_api::error::Error) -> TransactionImport {
 	use sc_transaction_pool_api::error::Error;
-	use sp_runtime::transaction_validity::InvalidTransaction;
+	use sp_runtime::transaction_validity::{InvalidTransaction, UnknownTransaction};
 	match e {
 		// Late gossip of txs just included in (or pruned by) a block is honest. Pool-level
-		// rejections cost us nothing, so they are neutral. Stale/unknown (the latter used by our
-		// nonce cap) needed a runtime call, so they get a small penalty that only floods add up.
-		Error::AlreadyImported(_) | Error::TemporarilyBanned => TransactionImport::KnownGood,
-		Error::InvalidTransaction(InvalidTransaction::Stale) | Error::UnknownTransaction(_) => {
-			TransactionImport::Outdated
-		},
+		// rejections cost us nothing, so they are neutral. So are pool-full / replacement
+		// rejections (`ImmediatelyDropped` also covers the fork-aware mempool limit): they depend
+		// on *our* pool state, and penalising them lets spam get honest relayers banned.
+		Error::AlreadyImported(_) |
+		Error::TemporarilyBanned |
+		Error::ImmediatelyDropped |
+		Error::TooLowPriority { .. } => TransactionImport::KnownGood,
+		// Stale/unknown (the latter used by our nonce cap) needed a runtime call, so they get a
+		// small penalty that only floods add up.
+		Error::InvalidTransaction(InvalidTransaction::Stale) |
+		Error::UnknownTransaction(UnknownTransaction::Custom(_)) |
+		Error::UnknownTransaction(UnknownTransaction::CannotLookup) => TransactionImport::Outdated,
+		// Includes `UnknownTransaction::NoUnsignedValidator`: an honest peer never relays it.
 		_ => TransactionImport::Bad,
 	}
 }
@@ -637,14 +644,18 @@ mod tests {
 	fn gossip_of_just_included_txs_is_not_penalised() {
 		use sc_transaction_pool_api::error::Error;
 		use sp_runtime::transaction_validity::{InvalidTransaction as I, UnknownTransaction as U};
-		let neutral = [Error::TemporarilyBanned, Error::AlreadyImported(Box::new(()))];
+		let neutral = [
+			Error::TemporarilyBanned,
+			Error::AlreadyImported(Box::new(())),
+			Error::ImmediatelyDropped,
+			Error::TooLowPriority { old: 10, new: 5 },
+		];
 		for e in &neutral {
 			assert!(matches!(pool_error_to_import(e), TransactionImport::KnownGood), "{e:?}");
 		}
 		let outdated = [
 			Error::InvalidTransaction(I::Stale),
 			Error::UnknownTransaction(U::CannotLookup),
-			Error::UnknownTransaction(U::NoUnsignedValidator),
 			Error::UnknownTransaction(U::Custom(1)),
 		];
 		for e in &outdated {
@@ -657,6 +668,11 @@ mod tests {
 			Error::InvalidTransaction(I::Payment),
 			Error::InvalidTransaction(I::ExhaustsResources),
 			Error::InvalidTransaction(I::Custom(7)),
+			Error::InvalidTransaction(I::Future),
+			Error::UnknownTransaction(U::NoUnsignedValidator),
+			Error::NoTagsProvided,
+			Error::CycleDetected,
+			Error::RejectedFutureTransaction,
 		];
 		for e in &bad {
 			assert!(matches!(pool_error_to_import(e), TransactionImport::Bad), "{e:?}");
