@@ -2502,3 +2502,26 @@ async fn observer_finalizes_through_authority_set_change() {
 	let wait_for = futures::future::join_all(finality_notifications);
 	run_until_complete(wait_for, &net).await;
 }
+
+/// KF-006: client paths read authorities through `grandpa_authorities_raw` on a v4 runtime; the
+/// legacy ed25519-typed method is only used below v4.
+#[test]
+fn client_paths_use_raw_authorities_api_on_v4_runtime() {
+	use sp_api::{Core, RuntimeApiInfo};
+	assert!(use_raw_authorities_api(Some(4)));
+	assert!(use_raw_authorities_api(Some(5)));
+	assert!(!use_raw_authorities_api(Some(3)));
+	assert!(!use_raw_authorities_api(None));
+
+	let client = Arc::new(substrate_test_runtime_client::new());
+	let genesis = client.info().genesis_hash;
+	let version = client.runtime_api().version(genesis).unwrap();
+	let grandpa_version = version.api_version(&<dyn GrandpaApi<Block>>::ID);
+	assert_eq!(grandpa_version, Some(<dyn GrandpaApi<Block>>::VERSION));
+	assert!(use_raw_authorities_api(grandpa_version));
+	// The runtime has `GrandpaApi` v4, so this takes the raw path (its set is empty).
+	let authorities = GenesisAuthoritySetProvider::<Block, AuthorityId>::get(&client).unwrap();
+	assert!(authorities.is_empty());
+	// Both the v4 raw path and the legacy one exist in the runtime; the raw one is the one used.
+	assert_eq!(<dyn GrandpaApi<Block>>::VERSION, 4);
+}

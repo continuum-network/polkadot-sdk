@@ -495,19 +495,33 @@ pub trait GenesisAuthoritySetProvider<Block: BlockT, Id = AuthorityId> {
 	fn get(&self) -> Result<AuthorityListOf<Id>, ClientError>;
 }
 
+/// Whether the client must read authorities with `grandpa_authorities_raw`.
+///
+/// Rule (KF-006): client code never calls the legacy, ed25519-typed `grandpa_authorities` on a
+/// `GrandpaApi` v4+ runtime. On a non-ed25519 (Dilithium) chain the legacy method cannot express
+/// the keys and returns an empty list, which a consumer could read as "no authorities".
+pub(crate) fn use_raw_authorities_api(grandpa_api_version: Option<u32>) -> bool {
+	grandpa_api_version.map_or(false, |v| v >= 4)
+}
+
 impl<Block: BlockT, E, Client> GenesisAuthoritySetProvider<Block, AuthorityId> for Arc<Client>
 where
 	E: CallExecutor<Block>,
 	Client: ExecutorProvider<Block, Executor = E> + HeaderBackend<Block>,
 {
 	fn get(&self) -> Result<AuthorityList, ClientError> {
-		self.executor()
-			.call(
-				self.expect_block_hash_from_id(&BlockId::Number(Zero::zero()))?,
-				"GrandpaApi_grandpa_authorities",
-				&[],
-				CallContext::Offchain,
+		let genesis = self.expect_block_hash_from_id(&BlockId::Number(Zero::zero()))?;
+		use sp_api::RuntimeApiInfo;
+		let version =
+			CallExecutor::runtime_version(self.executor(), genesis, CallContext::Offchain)?;
+		if use_raw_authorities_api(version.api_version(&<dyn GrandpaApi<Block>>::ID)) {
+			return GenericGenesisAuthoritySetProvider::<Block, Client, AuthorityId>::new(
+				self.clone(),
 			)
+			.get();
+		}
+		self.executor()
+			.call(genesis, "GrandpaApi_grandpa_authorities", &[], CallContext::Offchain)
 			.and_then(|call_result| {
 				Decode::decode(&mut &call_result[..]).map_err(|err| {
 					ClientError::CallResultDecode(
