@@ -196,6 +196,28 @@ where
 {
 }
 
+/// Drop round messages whose `(id, message)` was already yielded, whatever their signature.
+///
+/// `finality_grandpa` treats a second copy of the same vote as a duplicate only if the signature
+/// bytes are equal too. ML-DSA-65 signing is hedged (randomized), so a restarted voter re-signing
+/// its persisted vote (see `OutgoingMessages::start_send`) yields a new signature for the same
+/// vote. Without this filter, that copy plus the pre-restart copy gossiped back by peers is
+/// imported as an equivocation: the honest voter is counted as an equivocator for the round
+/// (its weight supports every block), and peers submit equivocation reports that the runtime
+/// rejects as same-target.
+pub(crate) fn dedup_signed_votes<S, H, N, Sig, Id>(
+	stream: S,
+) -> impl Stream<Item = finality_grandpa::SignedMessage<H, N, Sig, Id>> + Unpin
+where
+	S: Stream<Item = finality_grandpa::SignedMessage<H, N, Sig, Id>> + Unpin,
+	H: Encode,
+	N: Encode,
+	Id: Encode,
+{
+	let mut seen = std::collections::HashSet::new();
+	stream.filter(move |m| future::ready(seen.insert((&m.id, &m.message).encode())))
+}
+
 /// Create a unique topic for a round and set-id combo.
 pub(crate) fn round_topic<B: BlockT>(round: RoundNumber, set_id: SetIdNumber) -> B::Hash {
 	<<B::Header as HeaderT>::Hashing as HashT>::hash(format!("{}-{}", set_id, round).as_bytes())
@@ -471,7 +493,7 @@ where
 		// Combine incoming votes from external GRANDPA nodes with outgoing
 		// votes from our own GRANDPA voter to have a single
 		// vote-import-pipeline.
-		let incoming = stream::select(incoming, out_rx);
+		let incoming = dedup_signed_votes(stream::select(incoming, out_rx));
 
 		(incoming, outgoing)
 	}

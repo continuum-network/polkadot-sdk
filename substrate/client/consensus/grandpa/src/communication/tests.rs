@@ -720,3 +720,29 @@ fn grandpa_protocol_name() {
 	let proto_name = grandpa_protocol_name::standard_name(&genesis_hash, &chain_spec);
 	assert_eq!(proto_name.to_string(), expected);
 }
+
+// Regression: a restarted voter re-signs its persisted vote, and ML-DSA-65 signing is randomized,
+// so the same vote reaches the voter twice with different signatures. finality-grandpa would
+// import that as an equivocation; `dedup_signed_votes` must drop the second copy while still
+// passing a genuinely different vote from the same voter.
+#[test]
+fn same_vote_with_different_signature_is_not_reimported() {
+	use sp_consensus_grandpa::{AuthorityId, AuthoritySignature, SignedMessageOf};
+	type Header = <Block as sp_runtime::traits::Block>::Header;
+
+	let id = AuthorityId::from(Ed25519Keyring::Alice.public());
+	let signed = |target: u8, sig: u8| SignedMessageOf::<Header, AuthoritySignature, AuthorityId> {
+		message: finality_grandpa::Message::Prevote(finality_grandpa::Prevote {
+			target_hash: Hash::repeat_byte(target),
+			target_number: 1261,
+		}),
+		signature: AuthoritySignature::from(sp_core::ed25519::Signature::from_raw([sig; 64])),
+		id: id.clone(),
+	};
+
+	let input = vec![signed(1, 1), signed(1, 2), signed(2, 3), signed(1, 4)];
+	let out: Vec<_> = futures::executor::block_on(
+		super::dedup_signed_votes(futures::stream::iter(input.clone())).collect(),
+	);
+	assert_eq!(out, vec![input[0].clone(), input[2].clone()]);
+}
