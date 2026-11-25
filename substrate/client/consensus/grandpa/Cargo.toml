@@ -60,8 +60,8 @@ thiserror = { workspace = true }
 assert_matches = { workspace = true }
 finality-grandpa = { features = ["derive-codec", "test-helpers"], workspace = true, default-features = true }
 # Real ML-DSA-65 sign/verify for the Dilithium warp-sync test.
-pqcrypto-mldsa = { version = "0.1" }
-pqcrypto-traits = { version = "0.3" }
+pqcrypto-mldsa = { version = "0.1", default-features = false, features = ["std"] }
+pqcrypto-traits = { version = "0.3", default-features = false }
 sc-network-test = { workspace = true }
 sp-keyring = { default-features = true, workspace = true }
 sp-tracing = { default-features = true, workspace = true }
