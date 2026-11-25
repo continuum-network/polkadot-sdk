@@ -32,8 +32,25 @@ use sp_consensus_grandpa::{AuthorityId, AuthorityListOf};
 use crate::{SetId, LOG_TARGET};
 
 /// Trait bounds required for authority IDs in GRANDPA.
-pub trait AuthorityIdBounds: Clone + Codec + Debug + PartialEq + Eq + Ord + std::hash::Hash + AsRef<[u8]> + Send + Sync + 'static {}
-impl<T: Clone + Codec + Debug + PartialEq + Eq + Ord + std::hash::Hash + AsRef<[u8]> + Send + Sync + 'static> AuthorityIdBounds for T {}
+pub trait AuthorityIdBounds:
+	Clone + Codec + Debug + PartialEq + Eq + Ord + std::hash::Hash + AsRef<[u8]> + Send + Sync + 'static
+{
+}
+impl<
+		T: Clone
+			+ Codec
+			+ Debug
+			+ PartialEq
+			+ Eq
+			+ Ord
+			+ std::hash::Hash
+			+ AsRef<[u8]>
+			+ Send
+			+ Sync
+			+ 'static,
+	> AuthorityIdBounds for T
+{
+}
 
 /// Error type returned on operations on the `AuthoritySet`.
 #[derive(Debug, thiserror::Error)]

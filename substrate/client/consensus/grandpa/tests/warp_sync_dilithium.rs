@@ -85,8 +85,9 @@ const INVALID_COMMIT: &str = "invalid commit in grandpa justification";
 
 fn assert_invalid<T: std::fmt::Debug>(result: Result<T, Error>, expected: &str) {
 	match result {
-		Err(Error::InvalidProof(msg)) =>
-			assert!(msg.contains(expected), "expected InvalidProof({expected:?}), got {msg:?}"),
+		Err(Error::InvalidProof(msg)) => {
+			assert!(msg.contains(expected), "expected InvalidProof({expected:?}), got {msg:?}")
+		},
 		other => panic!("expected InvalidProof({expected:?}), got {other:?}"),
 	}
 }
@@ -220,7 +221,10 @@ fn warp_sync_proof_dilithium_rejects_wrong_authorities_or_set_id() {
 	let Chain { proof, alice, bob, .. } = build_chain();
 
 	// Starting from Bob skips set 0: Alice's justification must not be accepted for him.
-	assert_invalid(proof.verify(0, vec![(bob.id.clone(), 1u64)], &Default::default()), INVALID_COMMIT);
+	assert_invalid(
+		proof.verify(0, vec![(bob.id.clone(), 1u64)], &Default::default()),
+		INVALID_COMMIT,
+	);
 
 	// Signatures are bound to the set id.
 	assert_invalid(

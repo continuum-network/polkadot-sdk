@@ -41,13 +41,12 @@ use frame_support::traits::{Get, KeyOwnerProofSystem};
 use frame_system::pallet_prelude::BlockNumberFor;
 use log::{error, info};
 use sp_consensus_grandpa::{EquivocationProofOf, RoundNumber, SetId};
-use sp_runtime::RuntimeAppPublic;
 use sp_runtime::{
 	transaction_validity::{
 		InvalidTransaction, TransactionPriority, TransactionSource, TransactionValidity,
 		TransactionValidityError, ValidTransaction,
 	},
-	DispatchError, KeyTypeId, Perbill,
+	DispatchError, KeyTypeId, Perbill, RuntimeAppPublic,
 };
 use sp_session::{GetSessionNumber, GetValidatorCount};
 use sp_staking::{
@@ -120,7 +119,10 @@ pub struct EquivocationReportSystem<T, R, P, L>(core::marker::PhantomData<(T, R,
 impl<T, R, P, L>
 	OffenceReportSystem<
 		Option<T::AccountId>,
-		(EquivocationProofOf<T::Hash, BlockNumberFor<T>, T::AuthorityId, T::AuthoritySignature>, T::KeyOwnerProof),
+		(
+			EquivocationProofOf<T::Hash, BlockNumberFor<T>, T::AuthorityId, T::AuthoritySignature>,
+			T::KeyOwnerProof,
+		),
 	> for EquivocationReportSystem<T, R, P, L>
 where
 	T: Config + pallet_authorship::Config + frame_system::offchain::CreateBare<Call<T>>,
@@ -136,7 +138,10 @@ where
 	type Longevity = L;
 
 	fn publish_evidence(
-		evidence: (EquivocationProofOf<T::Hash, BlockNumberFor<T>, T::AuthorityId, T::AuthoritySignature>, T::KeyOwnerProof),
+		evidence: (
+			EquivocationProofOf<T::Hash, BlockNumberFor<T>, T::AuthorityId, T::AuthoritySignature>,
+			T::KeyOwnerProof,
+		),
 	) -> Result<(), ()> {
 		use frame_system::offchain::SubmitTransaction;
 		let (equivocation_proof, key_owner_proof) = evidence;
@@ -155,7 +160,10 @@ where
 	}
 
 	fn check_evidence(
-		evidence: (EquivocationProofOf<T::Hash, BlockNumberFor<T>, T::AuthorityId, T::AuthoritySignature>, T::KeyOwnerProof),
+		evidence: (
+			EquivocationProofOf<T::Hash, BlockNumberFor<T>, T::AuthorityId, T::AuthoritySignature>,
+			T::KeyOwnerProof,
+		),
 	) -> Result<(), TransactionValidityError> {
 		let (equivocation_proof, key_owner_proof) = evidence;
 
@@ -175,7 +183,10 @@ where
 
 	fn process_evidence(
 		reporter: Option<T::AccountId>,
-		evidence: (EquivocationProofOf<T::Hash, BlockNumberFor<T>, T::AuthorityId, T::AuthoritySignature>, T::KeyOwnerProof),
+		evidence: (
+			EquivocationProofOf<T::Hash, BlockNumberFor<T>, T::AuthorityId, T::AuthoritySignature>,
+			T::KeyOwnerProof,
+		),
 	) -> Result<(), DispatchError> {
 		let (equivocation_proof, key_owner_proof) = evidence;
 		let reporter = reporter.or_else(|| pallet_authorship::Pallet::<T>::author());

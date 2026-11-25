@@ -47,10 +47,7 @@ pub struct GrandpaJustification<Block: BlockT, Id = AuthorityId, Sig = Authority
 
 impl<Block: BlockT, Id: Clone, Sig: Clone> Clone for GrandpaJustification<Block, Id, Sig> {
 	fn clone(&self) -> Self {
-		Self {
-			justification: self.justification.clone(),
-			_block: PhantomData,
-		}
+		Self { justification: self.justification.clone(), _block: PhantomData }
 	}
 }
 

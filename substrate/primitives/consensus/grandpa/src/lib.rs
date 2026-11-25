@@ -80,19 +80,27 @@ pub fn sign_message_generic<P, H, N>(
 	public: <P as sp_core::Pair>::Public,
 	round: RoundNumber,
 	set_id: SetId,
-) -> Option<finality_grandpa::SignedMessage<H, N, <P as sp_core::Pair>::Signature, <P as sp_core::Pair>::Public>>
-where
-	P: sp_core::Pair + sp_application_crypto::AppCrypto<
-		Public = <P as sp_core::Pair>::Public,
-		Signature = <P as sp_core::Pair>::Signature,
+) -> Option<
+	finality_grandpa::SignedMessage<
+		H,
+		N,
+		<P as sp_core::Pair>::Signature,
+		<P as sp_core::Pair>::Public,
 	>,
+>
+where
+	P: sp_core::Pair
+		+ sp_application_crypto::AppCrypto<
+			Public = <P as sp_core::Pair>::Public,
+			Signature = <P as sp_core::Pair>::Signature,
+		>,
 	<P as sp_core::Pair>::Public: codec::Codec + Clone + AsRef<[u8]>,
 	<P as sp_core::Pair>::Signature: codec::Codec + Clone + TryFrom<Vec<u8>>,
 	H: Encode,
 	N: Encode,
 {
 	let encoded = localized_payload(round, set_id, &message);
-	
+
 	// Use sign_with for generic signing (supports Ed25519, Dilithium, etc.)
 	let signature_bytes = keystore
 		.sign_with(
@@ -103,7 +111,7 @@ where
 		)
 		.ok()
 		.flatten()?;
-	
+
 	let signature = signature_bytes.try_into().ok()?;
 
 	Some(finality_grandpa::SignedMessage { message, signature, id: public })
@@ -169,12 +177,8 @@ pub type CatchUp<Header> = finality_grandpa::CatchUp<
 >;
 
 /// A generic catch up message with custom signature and authority types.
-pub type CatchUpOf<Header, Sig, Id> = finality_grandpa::CatchUp<
-	<Header as HeaderT>::Hash,
-	<Header as HeaderT>::Number,
-	Sig,
-	Id,
->;
+pub type CatchUpOf<Header, Sig, Id> =
+	finality_grandpa::CatchUp<<Header as HeaderT>::Hash, <Header as HeaderT>::Number, Sig, Id>;
 
 /// A commit message for this chain's block type.
 pub type Commit<Header> = finality_grandpa::Commit<
@@ -185,12 +189,8 @@ pub type Commit<Header> = finality_grandpa::Commit<
 >;
 
 /// A generic commit message with custom signature and authority types.
-pub type CommitOf<Header, Sig, Id> = finality_grandpa::Commit<
-	<Header as HeaderT>::Hash,
-	<Header as HeaderT>::Number,
-	Sig,
-	Id,
->;
+pub type CommitOf<Header, Sig, Id> =
+	finality_grandpa::Commit<<Header as HeaderT>::Hash, <Header as HeaderT>::Number, Sig, Id>;
 
 /// A compact commit message for this chain's block type.
 pub type CompactCommit<Header> = finality_grandpa::CompactCommit<
@@ -547,21 +547,9 @@ impl<H, N, Id: Clone, Sig> EquivocationProofOf<H, N, Id, Sig> {
 #[derive(Clone, Debug, Decode, DecodeWithMemTracking, Encode, PartialEq, Eq, TypeInfo)]
 pub enum EquivocationOf<H, N, Id, Sig> {
 	/// Proof of equivocation at prevote stage.
-	Prevote(
-		finality_grandpa::Equivocation<
-			Id,
-			finality_grandpa::Prevote<H, N>,
-			Sig,
-		>,
-	),
+	Prevote(finality_grandpa::Equivocation<Id, finality_grandpa::Prevote<H, N>, Sig>),
 	/// Proof of equivocation at precommit stage.
-	Precommit(
-		finality_grandpa::Equivocation<
-			Id,
-			finality_grandpa::Precommit<H, N>,
-			Sig,
-		>,
-	),
+	Precommit(finality_grandpa::Equivocation<Id, finality_grandpa::Precommit<H, N>, Sig>),
 }
 
 impl<H, N, Id: Clone, Sig> EquivocationOf<H, N, Id, Sig> {
@@ -642,7 +630,10 @@ pub fn check_equivocation_proof_generic<H, N, Id, Sig>(
 where
 	H: Clone + Encode + PartialEq,
 	N: Clone + Encode + PartialEq,
-	Id: Clone + Encode + PartialEq + sp_core::crypto::ByteArray
+	Id: Clone
+		+ Encode
+		+ PartialEq
+		+ sp_core::crypto::ByteArray
 		+ sp_application_crypto::RuntimeAppPublic<Signature = Sig>
 		+ core::fmt::Debug,
 	Sig: Clone + Encode + sp_core::crypto::ByteArray + codec::Decode,
@@ -657,7 +648,7 @@ where
 			if $equivocation.first.0.target_hash == $equivocation.second.0.target_hash &&
 				$equivocation.first.0.target_number == $equivocation.second.0.target_number
 			{
-				return false
+				return false;
 			}
 
 			// check signatures on both votes are valid
@@ -906,7 +897,7 @@ where
 }
 
 /// Generic signature verification for custom authority types (e.g., Dilithium).
-/// 
+///
 /// This allows verifying GRANDPA messages signed with quantum-resistant algorithms.
 pub fn check_message_signature_generic<H, N, Id, Sig>(
 	message: &finality_grandpa::Message<H, N>,
@@ -921,7 +912,14 @@ where
 	Id: sp_application_crypto::RuntimeAppPublic<Signature = Sig> + core::fmt::Debug,
 	Sig: Clone,
 {
-	check_message_signature_generic_with_buffer(message, id, signature, round, set_id, &mut Vec::new())
+	check_message_signature_generic_with_buffer(
+		message,
+		id,
+		signature,
+		round,
+		set_id,
+		&mut Vec::new(),
+	)
 }
 
 /// Generic signature verification with buffer for custom authority types.
@@ -953,7 +951,7 @@ where
 }
 
 /// Localizes the message to the given set and round and signs the payload.
-/// 
+///
 /// This function uses the generic `sign_with` keystore method, which allows
 /// custom signature schemes (like Dilithium for quantum resistance) to be used.
 #[cfg(feature = "std")]
@@ -971,7 +969,7 @@ where
 	use sp_application_crypto::AppCrypto;
 
 	let encoded = localized_payload(round, set_id, &message);
-	
+
 	// Use sign_with for generic signing - this allows custom keystores
 	// (like DilithiumKeystore) to intercept and use their own signing logic
 	let signature = keystore

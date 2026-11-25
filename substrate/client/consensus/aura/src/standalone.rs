@@ -344,8 +344,7 @@ mod tests {
 	#[test]
 	fn claim_slot_uses_app_crypto_key_type() {
 		let keystore: KeystorePtr = std::sync::Arc::new(MemoryKeystore::new());
-		let public =
-			keystore.sr25519_generate_new(custom::ID, None).expect("key generation works");
+		let public = keystore.sr25519_generate_new(custom::ID, None).expect("key generation works");
 		let authorities = vec![custom::Public::from(public)];
 		let claimed = futures::executor::block_on(claim_slot::<custom::Pair>(
 			0.into(),

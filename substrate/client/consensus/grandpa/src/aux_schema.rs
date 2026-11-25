@@ -32,7 +32,8 @@ use sp_runtime::traits::{Block as BlockT, NumberFor};
 
 use crate::{
 	authorities::{
-		AuthorityIdBounds, AuthoritySet, AuthoritySetChanges, DelayKind, PendingChange, SharedAuthoritySet,
+		AuthorityIdBounds, AuthoritySet, AuthoritySetChanges, DelayKind, PendingChange,
+		SharedAuthoritySet,
 	},
 	environment::{
 		CompletedRound, CompletedRounds, CurrentRounds, HasVoted, SharedVoterSetState,
@@ -174,9 +175,10 @@ where
 {
 	CURRENT_VERSION.using_encoded(|s| backend.insert_aux(&[(VERSION_KEY, s)], &[]))?;
 
-	if let Some(old_set) =
-		load_decode::<_, V0AuthoritySet<Block::Hash, NumberFor<Block>, Id>>(backend, AUTHORITY_SET_KEY)?
-	{
+	if let Some(old_set) = load_decode::<_, V0AuthoritySet<Block::Hash, NumberFor<Block>, Id>>(
+		backend,
+		AUTHORITY_SET_KEY,
+	)? {
 		let new_set: AuthoritySet<Block::Hash, NumberFor<Block>, Id> = old_set.into();
 		backend.insert_aux(&[(AUTHORITY_SET_KEY, new_set.encode().as_slice())], &[])?;
 
@@ -234,9 +236,10 @@ where
 {
 	CURRENT_VERSION.using_encoded(|s| backend.insert_aux(&[(VERSION_KEY, s)], &[]))?;
 
-	if let Some(set) =
-		load_decode::<_, AuthoritySet<Block::Hash, NumberFor<Block>, Id>>(backend, AUTHORITY_SET_KEY)?
-	{
+	if let Some(set) = load_decode::<_, AuthoritySet<Block::Hash, NumberFor<Block>, Id>>(
+		backend,
+		AUTHORITY_SET_KEY,
+	)? {
 		let set_id = set.set_id;
 
 		let completed_rounds = |number, state, base| {
@@ -302,22 +305,24 @@ where
 {
 	CURRENT_VERSION.using_encoded(|s| backend.insert_aux(&[(VERSION_KEY, s)], &[]))?;
 
-	if let Some(old_set) =
-		load_decode::<_, V2AuthoritySet<Block::Hash, NumberFor<Block>, Id>>(backend, AUTHORITY_SET_KEY)?
-	{
+	if let Some(old_set) = load_decode::<_, V2AuthoritySet<Block::Hash, NumberFor<Block>, Id>>(
+		backend,
+		AUTHORITY_SET_KEY,
+	)? {
 		let new_set: AuthoritySet<Block::Hash, NumberFor<Block>, Id> = old_set.into();
 		backend.insert_aux(&[(AUTHORITY_SET_KEY, new_set.encode().as_slice())], &[])?;
 
-		let set_state = match load_decode::<_, VoterSetState<Block, Id, Sig>>(backend, SET_STATE_KEY)? {
-			Some(state) => state,
-			None => {
-				let state = genesis_round();
-				let base = state.prevote_ghost
+		let set_state =
+			match load_decode::<_, VoterSetState<Block, Id, Sig>>(backend, SET_STATE_KEY)? {
+				Some(state) => state,
+				None => {
+					let state = genesis_round();
+					let base = state.prevote_ghost
 					.expect("state is for completed round; completed rounds must have a prevote ghost; qed.");
 
-				VoterSetState::live(new_set.set_id, &new_set, base)
-			},
-		};
+					VoterSetState::live(new_set.set_id, &new_set, base)
+				},
+			};
 
 		return Ok(Some((new_set, set_state)));
 	}
@@ -378,17 +383,19 @@ where
 				backend,
 				AUTHORITY_SET_KEY,
 			)? {
-				let set_state =
-					match load_decode::<_, VoterSetState<Block, Id, Sig>>(backend, SET_STATE_KEY)? {
-						Some(state) => state,
-						None => {
-							let state = make_genesis_round();
-							let base = state.prevote_ghost
+				let set_state = match load_decode::<_, VoterSetState<Block, Id, Sig>>(
+					backend,
+					SET_STATE_KEY,
+				)? {
+					Some(state) => state,
+					None => {
+						let state = make_genesis_round();
+						let base = state.prevote_ghost
 							.expect("state is for completed round; completed rounds must have a prevote ghost; qed.");
 
-							VoterSetState::<Block, Id, Sig>::live(set.set_id, &set, base)
-						},
-					};
+						VoterSetState::<Block, Id, Sig>::live(set.set_id, &set, base)
+					},
+				};
 
 				return Ok(PersistentData {
 					authority_set: set.into(),
@@ -582,23 +589,25 @@ mod test {
 		assert_eq!(load_decode::<_, u32>(&client, VERSION_KEY).unwrap(), None);
 
 		// should perform the migration
-		load_persistent::<substrate_test_runtime_client::runtime::Block, _, _, AuthorityId, AuthoritySignature>(
-			&client,
-			H256::random(),
-			0,
-			|| unreachable!(),
-		)
+		load_persistent::<
+			substrate_test_runtime_client::runtime::Block,
+			_,
+			_,
+			AuthorityId,
+			AuthoritySignature,
+		>(&client, H256::random(), 0, || unreachable!())
 		.unwrap();
 
 		assert_eq!(load_decode::<_, u32>(&client, VERSION_KEY).unwrap(), Some(3));
 
 		let PersistentData { authority_set, set_state, .. } =
-			load_persistent::<substrate_test_runtime_client::runtime::Block, _, _, AuthorityId, AuthoritySignature>(
-				&client,
-				H256::random(),
-				0,
-				|| unreachable!(),
-			)
+			load_persistent::<
+				substrate_test_runtime_client::runtime::Block,
+				_,
+				_,
+				AuthorityId,
+				AuthoritySignature,
+			>(&client, H256::random(), 0, || unreachable!())
 			.unwrap();
 
 		assert_eq!(
@@ -675,23 +684,25 @@ mod test {
 		assert_eq!(load_decode::<_, u32>(&client, VERSION_KEY).unwrap(), Some(1));
 
 		// should perform the migration
-		load_persistent::<substrate_test_runtime_client::runtime::Block, _, _, AuthorityId, AuthoritySignature>(
-			&client,
-			H256::random(),
-			0,
-			|| unreachable!(),
-		)
+		load_persistent::<
+			substrate_test_runtime_client::runtime::Block,
+			_,
+			_,
+			AuthorityId,
+			AuthoritySignature,
+		>(&client, H256::random(), 0, || unreachable!())
 		.unwrap();
 
 		assert_eq!(load_decode::<_, u32>(&client, VERSION_KEY).unwrap(), Some(3));
 
 		let PersistentData { authority_set, set_state, .. } =
-			load_persistent::<substrate_test_runtime_client::runtime::Block, _, _, AuthorityId, AuthoritySignature>(
-				&client,
-				H256::random(),
-				0,
-				|| unreachable!(),
-			)
+			load_persistent::<
+				substrate_test_runtime_client::runtime::Block,
+				_,
+				_,
+				AuthorityId,
+				AuthoritySignature,
+			>(&client, H256::random(), 0, || unreachable!())
 			.unwrap();
 
 		assert_eq!(
@@ -765,26 +776,26 @@ mod test {
 		assert_eq!(load_decode::<_, u32>(&client, VERSION_KEY).unwrap(), Some(2));
 
 		// should perform the migration
-		load_persistent::<substrate_test_runtime_client::runtime::Block, _, _, AuthorityId, AuthoritySignature>(
-			&client,
-			H256::random(),
-			0,
-			|| unreachable!(),
-		)
-		.unwrap();
-
-		assert_eq!(load_decode::<_, u32>(&client, VERSION_KEY).unwrap(), Some(3));
-
-		let PersistentData { authority_set, .. } = load_persistent::<
+		load_persistent::<
 			substrate_test_runtime_client::runtime::Block,
 			_,
 			_,
 			AuthorityId,
 			AuthoritySignature,
-		>(
-			&client, H256::random(), 0, || unreachable!()
-		)
+		>(&client, H256::random(), 0, || unreachable!())
 		.unwrap();
+
+		assert_eq!(load_decode::<_, u32>(&client, VERSION_KEY).unwrap(), Some(3));
+
+		let PersistentData { authority_set, .. } =
+			load_persistent::<
+				substrate_test_runtime_client::runtime::Block,
+				_,
+				_,
+				AuthorityId,
+				AuthoritySignature,
+			>(&client, H256::random(), 0, || unreachable!())
+			.unwrap();
 
 		assert_eq!(
 			*authority_set.inner(),

@@ -164,7 +164,11 @@ mod tests {
 	use std::fs::{self, File};
 	use tempfile::TempDir;
 
-	fn params(node_key: Option<String>, node_key_file: Option<PathBuf>, force: bool) -> NodeKeyParams {
+	fn params(
+		node_key: Option<String>,
+		node_key_file: Option<PathBuf>,
+		force: bool,
+	) -> NodeKeyParams {
 		NodeKeyParams {
 			node_key_type: NodeKeyType::MlDsa65,
 			node_key,
@@ -178,8 +182,9 @@ mod tests {
 		let sk = libp2p_identity::mldsa65::SecretKey::generate();
 		let hex = array_bytes::bytes2hex("", sk.as_ref());
 		match params(Some(hex), None, false).node_key(&PathBuf::from("x"), Role::Authority, false) {
-			Ok(NodeKeyConfig::MlDsa65(sc_network::config::Secret::Input(ref ski))) =>
-				assert_eq!(ski.as_ref(), sk.as_ref()),
+			Ok(NodeKeyConfig::MlDsa65(sc_network::config::Secret::Input(ref ski))) => {
+				assert_eq!(ski.as_ref(), sk.as_ref())
+			},
 			other => panic!("Unexpected node key config: {other:?}"),
 		}
 	}
@@ -187,12 +192,15 @@ mod tests {
 	#[test]
 	fn test_node_key_config_default() {
 		let dir = PathBuf::from("x");
-		for (force, role, is_dev) in
-			[(false, Role::Full, false), (false, Role::Authority, true), (true, Role::Authority, false)]
-		{
+		for (force, role, is_dev) in [
+			(false, Role::Full, false),
+			(false, Role::Authority, true),
+			(true, Role::Authority, false),
+		] {
 			match params(None, None, force).node_key(&dir, role, is_dev).unwrap() {
-				NodeKeyConfig::MlDsa65(sc_network::config::Secret::File(ref f)) =>
-					assert_eq!(f, &dir.join(NODE_KEY_MLDSA65_FILE)),
+				NodeKeyConfig::MlDsa65(sc_network::config::Secret::File(ref f)) => {
+					assert_eq!(f, &dir.join(NODE_KEY_MLDSA65_FILE))
+				},
 				other => panic!("Unexpected node key config: {other:?}"),
 			}
 		}
@@ -230,11 +238,10 @@ mod tests {
 		let tmp = tempfile::Builder::new().prefix("alice").tempdir().expect("tempdir");
 		let file = tmp.path().join("mysecret");
 		let sk = libp2p_identity::mldsa65::SecretKey::generate();
-		let expected = libp2p_identity::Keypair::from(libp2p_identity::mldsa65::Keypair::from(
-			sk.clone(),
-		))
-		.public()
-		.to_peer_id();
+		let expected =
+			libp2p_identity::Keypair::from(libp2p_identity::mldsa65::Keypair::from(sk.clone()))
+				.public()
+				.to_peer_id();
 
 		for contents in [sk.as_ref().to_vec(), array_bytes::bytes2hex("", sk.as_ref()).into_bytes()]
 		{

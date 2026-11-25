@@ -96,7 +96,9 @@ use sc_network_gossip::{MessageIntent, ValidatorContext};
 use sc_network_types::PeerId;
 use sc_telemetry::{telemetry, TelemetryHandle, CONSENSUS_DEBUG};
 use sc_utils::mpsc::{tracing_unbounded, TracingUnboundedReceiver, TracingUnboundedSender};
-use sp_consensus_grandpa::{AuthorityId, AuthoritySignature, CatchUpOf, CompactCommitOf, SignedMessageOf};
+use sp_consensus_grandpa::{
+	AuthorityId, AuthoritySignature, CatchUpOf, CompactCommitOf, SignedMessageOf,
+};
 use sp_runtime::traits::{Block as BlockT, NumberFor, Zero};
 
 use super::{benefit, cost, Round, SetId, NEIGHBOR_REBROADCAST_PERIOD};
@@ -345,7 +347,9 @@ pub(super) enum GossipMessage<Block: BlockT, Id = AuthorityId, Sig = AuthoritySi
 	CatchUp(FullCatchUpMessage<Block, Id, Sig>),
 }
 
-impl<Block: BlockT, Id, Sig> From<NeighborPacket<NumberFor<Block>>> for GossipMessage<Block, Id, Sig> {
+impl<Block: BlockT, Id, Sig> From<NeighborPacket<NumberFor<Block>>>
+	for GossipMessage<Block, Id, Sig>
+{
 	fn from(neighbor: NeighborPacket<NumberFor<Block>>) -> Self {
 		GossipMessage::Neighbor(VersionedNeighborPacket::V1(neighbor))
 	}
@@ -906,8 +910,7 @@ where
 		&self,
 		who: &PeerId,
 		full: &VoteMessage<Block, Id, Sig>,
-	) -> Action<Block::Hash>
-	{
+	) -> Action<Block::Hash> {
 		match self.consider_vote(full.round, full.set_id) {
 			Consider::RejectFuture => return Action::Discard(Misbehavior::FutureMessage.cost()),
 			Consider::RejectOutOfScope => {
@@ -1131,13 +1134,14 @@ where
 
 		let (base_hash, base_number) = last_completed_round.base;
 
-		let catch_up: sp_consensus_grandpa::CatchUpOf<Block::Header, Sig, Id> = finality_grandpa::CatchUp {
-			round_number: last_completed_round.number,
-			prevotes,
-			precommits,
-			base_hash,
-			base_number,
-		};
+		let catch_up: sp_consensus_grandpa::CatchUpOf<Block::Header, Sig, Id> =
+			finality_grandpa::CatchUp {
+				round_number: last_completed_round.number,
+				prevotes,
+				precommits,
+				base_hash,
+				base_number,
+			};
 
 		let full_catch_up = GossipMessage::<Block, Id, Sig>::CatchUp(FullCatchUpMessage {
 			set_id: request.set_id,
@@ -1147,7 +1151,10 @@ where
 		(Some(full_catch_up), Action::Discard(cost::CATCH_UP_REPLY))
 	}
 
-	fn try_catch_up(&mut self, who: &PeerId) -> (Option<GossipMessage<Block, Id, Sig>>, Option<Report>) {
+	fn try_catch_up(
+		&mut self,
+		who: &PeerId,
+	) -> (Option<GossipMessage<Block, Id, Sig>>, Option<Report>) {
 		let mut catch_up = None;
 		let mut report = None;
 
@@ -1188,7 +1195,12 @@ where
 		&mut self,
 		who: &PeerId,
 		update: NeighborPacket<NumberFor<Block>>,
-	) -> (Vec<Block::Hash>, Action<Block::Hash>, Option<GossipMessage<Block, Id, Sig>>, Option<Report>) {
+	) -> (
+		Vec<Block::Hash>,
+		Action<Block::Hash>,
+		Option<GossipMessage<Block, Id, Sig>>,
+		Option<Report>,
+	) {
 		let update_res = self.peers.update_peer_state(who, update);
 
 		let (cost_benefit, topics) = match update_res {

@@ -107,8 +107,7 @@ fn generate_key(
 	let material = mldsa.to_secret_material();
 	let keypair = Keypair::from(mldsa);
 
-	let file_data =
-		if bin { material } else { array_bytes::bytes2hex("", &material).into_bytes() };
+	let file_data = if bin { material } else { array_bytes::bytes2hex("", &material).into_bytes() };
 
 	match (file, base_path, default_base_path) {
 		(Some(file), None, false) => fs::write(file, file_data)?,

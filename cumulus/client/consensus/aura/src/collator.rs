@@ -442,7 +442,11 @@ where
 	B: BlockT,
 	C: ProvideRuntimeApi<B> + Send + Sync + 'static,
 	C::Api: AuraApi<B, <P as Pair>::Public>,
-	P: Pair + sp_application_crypto::AppCrypto<Public = <P as Pair>::Public, Signature = <P as Pair>::Signature>,
+	P: Pair
+		+ sp_application_crypto::AppCrypto<
+			Public = <P as Pair>::Public,
+			Signature = <P as Pair>::Signature,
+		>,
 	<P as Pair>::Public: Codec,
 	<P as Pair>::Signature: Codec,
 {

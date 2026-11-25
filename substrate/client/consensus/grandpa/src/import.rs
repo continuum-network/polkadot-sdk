@@ -32,7 +32,10 @@ use sc_utils::mpsc::TracingUnboundedSender;
 use sp_api::{Core, RuntimeApiInfo};
 use sp_blockchain::BlockStatus;
 use sp_consensus::{BlockOrigin, Error as ConsensusError, SelectChain};
-use sp_consensus_grandpa::{AuthorityId, AuthorityListOf, AuthoritySignature, ConsensusLog, GrandpaApi, ScheduledChange, SetId, GRANDPA_ENGINE_ID};
+use sp_consensus_grandpa::{
+	AuthorityId, AuthorityListOf, AuthoritySignature, ConsensusLog, GrandpaApi, ScheduledChange,
+	SetId, GRANDPA_ENGINE_ID,
+};
 use sp_runtime::{
 	generic::OpaqueDigestItemId,
 	traits::{Block as BlockT, Header as HeaderT, NumberFor, Zero},
@@ -57,8 +60,14 @@ use crate::{
 ///
 /// When using GRANDPA, the block import worker should be using this block import
 /// object.
-pub struct GrandpaBlockImport<Backend, Block: BlockT, Client, SC, Id = AuthorityId, Sig = AuthoritySignature> 
-where
+pub struct GrandpaBlockImport<
+	Backend,
+	Block: BlockT,
+	Client,
+	SC,
+	Id = AuthorityId,
+	Sig = AuthoritySignature,
+> where
 	Id: crate::authorities::AuthorityIdBounds,
 	Sig: sp_consensus_grandpa::AuthoritySignatureBounds,
 {
@@ -290,7 +299,9 @@ where
 		}
 
 		// check for forced change using the generic version.
-		if let Some((median_last_finalized, change)) = find_forced_change_generic::<Block, Id>(header) {
+		if let Some((median_last_finalized, change)) =
+			find_forced_change_generic::<Block, Id>(header)
+		{
 			return Some(PendingChange {
 				next_authorities: change.next_authorities,
 				delay: change.delay,
@@ -529,7 +540,7 @@ where
 				// finality proofs and that the state is correct and final.
 				// So we can read the authority list and set id from the state.
 				self.authority_set_hard_forks.lock().clear();
-				
+
 				// Use grandpa_authorities_raw() which returns Vec<(Vec<u8>, u64)>
 				// This allows us to decode the authority ID as the generic type Id
 				let raw_authorities: Vec<(Vec<u8>, u64)> = self
@@ -537,9 +548,9 @@ where
 					.runtime_api()
 					.grandpa_authorities_raw(hash)
 					.map_err(|e| ConsensusError::ClientImport(e.to_string()))?;
-				
+
 				let set_id = self.current_set_id(hash)?;
-				
+
 				// Decode each authority ID from raw bytes
 				let generic_authorities_for_set: AuthorityListOf<Id> = raw_authorities
 					.iter()
@@ -551,10 +562,10 @@ where
 						})
 					})
 					.collect::<Result<_, _>>()?;
-				
+
 				// Clone for use in voter command notification
 				let authorities_for_voter = generic_authorities_for_set.clone();
-				
+
 				let authority_set = AuthoritySet::new(
 					generic_authorities_for_set,
 					set_id,
@@ -571,12 +582,12 @@ where
 					|insert| self.inner.insert_aux(insert, []),
 				)
 				.map_err(|e| ConsensusError::ClientImport(e.to_string()))?;
-				
+
 				// Notify the voter of the new authority set
-				let new_set = NewAuthoritySet::<_, _, Id> { 
-					canon_number: number, 
-					canon_hash: hash, 
-					set_id, 
+				let new_set = NewAuthoritySet::<_, _, Id> {
+					canon_number: number,
+					canon_hash: hash,
+					set_id,
 					authorities: authorities_for_voter,
 				};
 				let _ = self
@@ -591,7 +602,8 @@ where
 }
 
 #[async_trait::async_trait]
-impl<BE, Block: BlockT, Client, SC, Id, Sig> BlockImport<Block> for GrandpaBlockImport<BE, Block, Client, SC, Id, Sig>
+impl<BE, Block: BlockT, Client, SC, Id, Sig> BlockImport<Block>
+	for GrandpaBlockImport<BE, Block, Client, SC, Id, Sig>
 where
 	NumberFor<Block>: finality_grandpa::BlockNumberOps,
 	BE: Backend<Block>,
@@ -820,7 +832,8 @@ where
 	}
 }
 
-impl<Backend, Block: BlockT, Client, SC, Id, Sig> GrandpaBlockImport<Backend, Block, Client, SC, Id, Sig> 
+impl<Backend, Block: BlockT, Client, SC, Id, Sig>
+	GrandpaBlockImport<Backend, Block, Client, SC, Id, Sig>
 where
 	Id: crate::authorities::AuthorityIdBounds,
 	Sig: sp_consensus_grandpa::AuthoritySignatureBounds,
@@ -830,7 +843,9 @@ where
 		justification_import_period: u32,
 		select_chain: SC,
 		authority_set: SharedAuthoritySet<Block::Hash, NumberFor<Block>, Id>,
-		send_voter_commands: TracingUnboundedSender<VoterCommand<Block::Hash, NumberFor<Block>, Id>>,
+		send_voter_commands: TracingUnboundedSender<
+			VoterCommand<Block::Hash, NumberFor<Block>, Id>,
+		>,
 		authority_set_hard_forks: Vec<(SetId, PendingChange<Block::Hash, NumberFor<Block>, Id>)>,
 		justification_sender: GrandpaJustificationSender<Block, Id, Sig>,
 		telemetry: Option<TelemetryHandle>,

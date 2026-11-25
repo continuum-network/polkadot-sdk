@@ -177,7 +177,13 @@ pub fn run<Block, P, BI, CIDP, Client, Backend, RClient, CHP, Proposer, CS, Spaw
 	Proposer: Environment<Block> + Send + Sync + 'static,
 	CS: CollatorServiceInterface<Block> + Send + Sync + Clone + 'static,
 	CHP: consensus_common::ValidationCodeHashProvider<Block::Hash> + Send + 'static,
-	P: Pair + sp_application_crypto::AppCrypto<Public = <P as Pair>::Public, Signature = <P as Pair>::Signature> + Send + Sync + 'static,
+	P: Pair
+		+ sp_application_crypto::AppCrypto<
+			Public = <P as Pair>::Public,
+			Signature = <P as Pair>::Signature,
+		> + Send
+		+ Sync
+		+ 'static,
 	<P as Pair>::Public: AppPublic + Member + Codec,
 	<P as Pair>::Signature: TryFrom<Vec<u8>> + Member + Codec,
 	Spawner: SpawnEssentialNamed + Clone + 'static,

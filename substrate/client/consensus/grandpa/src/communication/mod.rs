@@ -52,18 +52,12 @@ use sc_telemetry::{telemetry, TelemetryHandle, CONSENSUS_DEBUG, CONSENSUS_INFO};
 use sp_keystore::KeystorePtr;
 use sp_runtime::traits::{Block as BlockT, Hash as HashT, Header as HeaderT, NumberFor};
 
-use crate::{
-	environment::HasVoted, CommunicationIn, CommunicationOutH,
-	Error, LOG_TARGET,
-};
-use sp_consensus_grandpa::Message;
-use gossip::{
-	FullCatchUpMessage, FullCommitMessage, GossipMessage, GossipValidator, PeerReport,
-};
+use crate::{environment::HasVoted, CommunicationIn, CommunicationOutH, Error, LOG_TARGET};
+use gossip::{FullCatchUpMessage, FullCommitMessage, GossipMessage, GossipValidator, PeerReport};
 use sc_network_sync::SyncEventStream;
 use sc_utils::mpsc::TracingUnboundedReceiver;
 use sp_consensus_grandpa::{
-	AuthorityId, AuthoritySignature, CatchUpOf, CommitOf, CompactCommitOf, RoundNumber, 
+	AuthorityId, AuthoritySignature, CatchUpOf, CommitOf, CompactCommitOf, Message, RoundNumber,
 	SetId as SetIdNumber, SignedMessageOf,
 };
 
@@ -213,8 +207,13 @@ pub(crate) fn global_topic<B: BlockT>(set_id: SetIdNumber) -> B::Hash {
 }
 
 /// Bridge between the underlying network service, gossiping consensus messages and Grandpa
-pub(crate) struct NetworkBridge<B: BlockT, N: Network<B>, S: Syncing<B>, Id = AuthorityId, Sig = AuthoritySignature>
-where
+pub(crate) struct NetworkBridge<
+	B: BlockT,
+	N: Network<B>,
+	S: Syncing<B>,
+	Id = AuthorityId,
+	Sig = AuthoritySignature,
+> where
 	Id: crate::authorities::AuthorityIdBounds,
 	Sig: sp_consensus_grandpa::AuthoritySignatureBounds,
 {
@@ -228,7 +227,7 @@ where
 	/// Packets sent into this channel are processed by the `NeighborPacketWorker` and passed on to
 	/// the underlying `GossipEngine`.
 	neighbor_sender: periodic::NeighborPacketSender<B>,
-	
+
 	/// Marker for generic Id and Sig types
 	_phantom: std::marker::PhantomData<(Id, Sig)>,
 
@@ -252,7 +251,8 @@ impl<B: BlockT, N: Network<B>, S: Syncing<B>, Id, Sig> Unpin for NetworkBridge<B
 where
 	Id: crate::authorities::AuthorityIdBounds,
 	Sig: sp_consensus_grandpa::AuthoritySignatureBounds,
-{}
+{
+}
 
 impl<B: BlockT, N: Network<B>, S: Syncing<B>, Id, Sig> NetworkBridge<B, N, S, Id, Sig>
 where
@@ -343,12 +343,9 @@ where
 		// is a no-op if currently in that set.
 		// Use full Dilithium Ids - no conversion needed
 		let voter_ids: Vec<Id> = voters.iter().map(|(v, _)| v.clone()).collect();
-		
-		self.validator.note_set(
-			set_id,
-			voter_ids,
-			|to, neighbor| self.neighbor_sender.send(to, neighbor),
-		);
+
+		self.validator
+			.note_set(set_id, voter_ids, |to, neighbor| self.neighbor_sender.send(to, neighbor));
 
 		self.validator
 			.note_round(round, |to, neighbor| self.neighbor_sender.send(to, neighbor));
@@ -363,7 +360,10 @@ where
 		set_id: SetId,
 		voters: Arc<VoterSet<Id>>,
 		has_voted: HasVoted<B::Header, Id>,
-	) -> (impl Stream<Item = SignedMessageOf<B::Header, Sig, Id>> + Unpin, OutgoingMessages<B, Id, Sig>)
+	) -> (
+		impl Stream<Item = SignedMessageOf<B::Header, Sig, Id>> + Unpin,
+		OutgoingMessages<B, Id, Sig>,
+	)
 	where
 		Id: codec::Decode,
 		Sig: codec::Decode,
@@ -383,7 +383,8 @@ where
 		let telemetry = self.telemetry.clone();
 		let incoming =
 			self.gossip_engine.lock().messages_for(topic).filter_map(move |notification| {
-				let decoded = GossipMessage::<B, Id, Sig>::decode_all(&mut &notification.message[..]);
+				let decoded =
+					GossipMessage::<B, Id, Sig>::decode_all(&mut &notification.message[..]);
 
 				match decoded {
 					Err(ref e) => {
@@ -491,15 +492,12 @@ where
 	{
 		// Use full Dilithium Ids - no conversion to Ed25519
 		let voter_ids: Vec<Id> = voters.iter().map(|(v, _)| v.clone()).collect();
-		
-		self.validator.note_set(
-			set_id,
-			voter_ids,
-			|to, neighbor| self.neighbor_sender.send(to, neighbor),
-		);
+
+		self.validator
+			.note_set(set_id, voter_ids, |to, neighbor| self.neighbor_sender.send(to, neighbor));
 
 		let topic = global_topic::<B>(set_id.0);
-		
+
 		let incoming = incoming_global::<B, Id, Sig>(
 			self.gossip_engine.clone(),
 			topic,
@@ -699,7 +697,8 @@ where
 		let gossip_validator = gossip_validator.clone();
 		let gossip_engine = gossip_engine.clone();
 
-		if let Err(cost) = check_catch_up::<B, Id, Sig>(&msg.message, voters, msg.set_id, telemetry.clone())
+		if let Err(cost) =
+			check_catch_up::<B, Id, Sig>(&msg.message, voters, msg.set_id, telemetry.clone())
 		{
 			if let Some(who) = notification.sender {
 				gossip_engine.lock().report(who, cost);
@@ -810,7 +809,8 @@ impl<B: BlockT, Id, Sig> Unpin for OutgoingMessages<B, Id, Sig>
 where
 	Id: crate::authorities::AuthorityIdBounds,
 	Sig: sp_consensus_grandpa::AuthoritySignatureBounds,
-{}
+{
+}
 
 impl<Block: BlockT, Id, Sig> Sink<Message<Block::Header>> for OutgoingMessages<Block, Id, Sig>
 where
@@ -853,13 +853,13 @@ where
 		// when locals exist, sign messages on import
 		if let Some(ref keystore) = self.keystore {
 			let target_hash = *(msg.target().0);
-			
+
 			// Sign using the generic key type (Dilithium for quantum resistance)
 			// Use keystore.sign_with directly with the key type from Id
-			
+
 			// Construct the message to sign
 			let encoded = sp_consensus_grandpa::localized_payload(self.round, self.set_id, &msg);
-			
+
 			// Sign with the keystore using the generic public key
 			let local_id = keystore.local_id();
 			let sig_result = keystore.keystore().sign_with(
@@ -868,7 +868,7 @@ where
 				local_id.as_ref(),
 				&encoded,
 			);
-			
+
 			let signature = sig_result
 				.map_err(|e| Error::Signing(format!("Keystore error: {:?}", e)))?
 				.ok_or_else(|| {
@@ -877,16 +877,22 @@ where
 						self.round, target_hash
 					))
 				})?;
-			
+
 			// Decode the signature into the generic Sig type (Dilithium for quantum resistance)
-			let generic_sig = Sig::decode(&mut &signature[..])
-				.map_err(|e| Error::Signing(format!("Failed to decode signature from {} bytes: {:?}", signature.len(), e)))?;
-			
-			let signed_for_gossip: SignedMessageOf<Block::Header, Sig, Id> = finality_grandpa::SignedMessage {
-				message: msg.clone(),
-				signature: generic_sig,
-				id: local_id.clone(),
-			};
+			let generic_sig = Sig::decode(&mut &signature[..]).map_err(|e| {
+				Error::Signing(format!(
+					"Failed to decode signature from {} bytes: {:?}",
+					signature.len(),
+					e
+				))
+			})?;
+
+			let signed_for_gossip: SignedMessageOf<Block::Header, Sig, Id> =
+				finality_grandpa::SignedMessage {
+					message: msg.clone(),
+					signature: generic_sig,
+					id: local_id.clone(),
+				};
 
 			let message = GossipMessage::<Block, Id, Sig>::Vote(gossip::VoteMessage {
 				message: signed_for_gossip.clone(),
@@ -1212,7 +1218,8 @@ where
 	}
 }
 
-impl<Block: BlockT, Id, Sig> Sink<(RoundNumber, CommitOf<Block::Header, Sig, Id>)> for CommitsOut<Block, Id, Sig>
+impl<Block: BlockT, Id, Sig> Sink<(RoundNumber, CommitOf<Block::Header, Sig, Id>)>
+	for CommitsOut<Block, Id, Sig>
 where
 	Id: crate::authorities::AuthorityIdBounds + codec::Encode,
 	Sig: sp_consensus_grandpa::AuthoritySignatureBounds + codec::Encode,

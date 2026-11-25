@@ -57,16 +57,12 @@ use crate::{
 	notification::GrandpaJustificationSender,
 	until_imported::UntilVoteTargetImported,
 	voting_rule::VotingRule as VotingRuleT,
-	ClientForGrandpa, CommandOrError, Config, Error, NewAuthoritySet, Precommit,
-	Prevote, PrimaryPropose, SignedMessageOf, VoterCommand, LOG_TARGET,
+	ClientForGrandpa, CommandOrError, Config, Error, NewAuthoritySet, Precommit, Prevote,
+	PrimaryPropose, SignedMessageOf, VoterCommand, LOG_TARGET,
 };
 
-type HistoricalVotes<Block, Id = AuthorityId, Sig = AuthoritySignature> = finality_grandpa::HistoricalVotes<
-	<Block as BlockT>::Hash,
-	NumberFor<Block>,
-	Sig,
-	Id,
->;
+type HistoricalVotes<Block, Id = AuthorityId, Sig = AuthoritySignature> =
+	finality_grandpa::HistoricalVotes<<Block as BlockT>::Hash, NumberFor<Block>, Sig, Id>;
 
 /// Data about a completed round. The set of votes that is stored must be
 /// minimal, i.e. at most one equivocation is stored per voter.
@@ -113,7 +109,9 @@ impl<Block: BlockT, Id: Decode, Sig: Decode> Decode for CompletedRounds<Block, I
 	}
 }
 
-impl<Block: BlockT, Id: AuthorityIdBounds, Sig: sp_consensus_grandpa::AuthoritySignatureBounds> CompletedRounds<Block, Id, Sig> {
+impl<Block: BlockT, Id: AuthorityIdBounds, Sig: sp_consensus_grandpa::AuthoritySignatureBounds>
+	CompletedRounds<Block, Id, Sig>
+{
 	/// Create a new completed rounds tracker with NUM_LAST_COMPLETED_ROUNDS capacity.
 	pub(crate) fn new(
 		genesis: CompletedRound<Block, Id, Sig>,
@@ -166,7 +164,8 @@ impl<Block: BlockT, Id: AuthorityIdBounds, Sig: sp_consensus_grandpa::AuthorityS
 
 /// A map with voter status information for currently live rounds,
 /// which votes have we cast and what are they.
-pub type CurrentRounds<Block, Id = AuthorityId> = BTreeMap<RoundNumber, HasVoted<<Block as BlockT>::Header, Id>>;
+pub type CurrentRounds<Block, Id = AuthorityId> =
+	BTreeMap<RoundNumber, HasVoted<<Block as BlockT>::Header, Id>>;
 
 /// The state of the current voter set, whether it is currently active or not
 /// and information related to the previously completed rounds. Current round
@@ -189,7 +188,9 @@ pub enum VoterSetState<Block: BlockT, Id = AuthorityId, Sig = AuthoritySignature
 	},
 }
 
-impl<Block: BlockT, Id: AuthorityIdBounds, Sig: sp_consensus_grandpa::AuthoritySignatureBounds> VoterSetState<Block, Id, Sig> {
+impl<Block: BlockT, Id: AuthorityIdBounds, Sig: sp_consensus_grandpa::AuthoritySignatureBounds>
+	VoterSetState<Block, Id, Sig>
+{
 	/// Create a new live VoterSetState with round 0 as a completed round using
 	/// the given genesis state and the given authorities. Round 1 is added as a
 	/// current round (with state `HasVoted::No`).
@@ -329,13 +330,17 @@ pub struct SharedVoterSetState<Block: BlockT, Id = AuthorityId, Sig = AuthorityS
 	voting: Arc<RwLock<HashMap<RoundNumber, Id>>>,
 }
 
-impl<Block: BlockT, Id: AuthorityIdBounds, Sig: sp_consensus_grandpa::AuthoritySignatureBounds> From<VoterSetState<Block, Id, Sig>> for SharedVoterSetState<Block, Id, Sig> {
+impl<Block: BlockT, Id: AuthorityIdBounds, Sig: sp_consensus_grandpa::AuthoritySignatureBounds>
+	From<VoterSetState<Block, Id, Sig>> for SharedVoterSetState<Block, Id, Sig>
+{
 	fn from(set_state: VoterSetState<Block, Id, Sig>) -> Self {
 		SharedVoterSetState::new(set_state)
 	}
 }
 
-impl<Block: BlockT, Id: AuthorityIdBounds, Sig: sp_consensus_grandpa::AuthoritySignatureBounds> SharedVoterSetState<Block, Id, Sig> {
+impl<Block: BlockT, Id: AuthorityIdBounds, Sig: sp_consensus_grandpa::AuthoritySignatureBounds>
+	SharedVoterSetState<Block, Id, Sig>
+{
 	/// Create a new shared voter set tracker with the given state.
 	pub(crate) fn new(state: VoterSetState<Block, Id, Sig>) -> Self {
 		SharedVoterSetState {
@@ -438,8 +443,7 @@ pub(crate) struct Environment<
 	VR,
 	Id = AuthorityId,
 	Sig = AuthoritySignature,
->
-where
+> where
 	Id: crate::authorities::AuthorityIdBounds,
 	Sig: sp_consensus_grandpa::AuthoritySignatureBounds,
 {
@@ -470,7 +474,9 @@ where
 	/// state is set to its result if successful.
 	pub(crate) fn update_voter_set_state<F>(&self, f: F) -> Result<(), Error>
 	where
-		F: FnOnce(&VoterSetState<Block, Id, Sig>) -> Result<Option<VoterSetState<Block, Id, Sig>>, Error>,
+		F: FnOnce(
+			&VoterSetState<Block, Id, Sig>,
+		) -> Result<Option<VoterSetState<Block, Id, Sig>>, Error>,
 	{
 		self.voter_set_state.with(|voter_set_state| {
 			if let Some(set_state) = f(voter_set_state)? {
@@ -580,23 +586,20 @@ where
 			.unwrap_or(0);
 
 		match equivocation_report_disposition(offender_bytes.len(), grandpa_api_version) {
-			EquivocationReportDisposition::SubmitRaw => {
-				self.report_equivocation_raw(
-					equivocation,
+			EquivocationReportDisposition::SubmitRaw => self.report_equivocation_raw(
+				equivocation,
+				offender_bytes,
+				current_set_latest_hash,
+				best_block_hash,
+				authority_set.set_id,
+			),
+			EquivocationReportDisposition::SubmitLegacyEd25519 => self
+				.report_equivocation_legacy_ed25519(
 					offender_bytes,
 					current_set_latest_hash,
 					best_block_hash,
 					authority_set.set_id,
-				)
-			},
-			EquivocationReportDisposition::SubmitLegacyEd25519 => {
-				self.report_equivocation_legacy_ed25519(
-					offender_bytes,
-					current_set_latest_hash,
-					best_block_hash,
-					authority_set.set_id,
-				)
-			},
+				),
 			EquivocationReportDisposition::SkipUnsupported { offender_len } => {
 				warn!(
 					target: LOG_TARGET,
@@ -642,8 +645,10 @@ where
 			},
 		};
 
-		let equivocation_proof =
-			EquivocationProofOf::<Block::Hash, NumberFor<Block>, Id, Sig>::new(set_id, equivocation);
+		let equivocation_proof = EquivocationProofOf::<Block::Hash, NumberFor<Block>, Id, Sig>::new(
+			set_id,
+			equivocation,
+		);
 		let encoded_proof = equivocation_proof.encode();
 
 		let mut runtime_api = self.client.runtime_api();
@@ -671,13 +676,12 @@ where
 		set_id: SetId,
 	) -> Result<(), Error> {
 		if offender_bytes.len() != 32 {
-			return Ok(())
+			return Ok(());
 		}
 
 		let mut arr = [0u8; 32];
 		arr.copy_from_slice(&offender_bytes);
-		let offender_ed25519 =
-			AuthorityId::from(sp_core::ed25519::Public::from_raw(arr));
+		let offender_ed25519 = AuthorityId::from(sp_core::ed25519::Public::from_raw(arr));
 
 		let key_owner_proof = match self
 			.client
@@ -691,7 +695,7 @@ where
 					target: LOG_TARGET,
 					"Equivocation offender is not part of the authority set."
 				);
-				return Ok(())
+				return Ok(());
 			},
 		};
 
@@ -1220,7 +1224,8 @@ where
 			// started in increasing order, still it's better to play it safe.
 			current_rounds.entry(round + 1).or_insert(HasVoted::No);
 
-			let set_state = VoterSetState::<Block, Id, Sig>::Live { completed_rounds, current_rounds };
+			let set_state =
+				VoterSetState::<Block, Id, Sig>::Live { completed_rounds, current_rounds };
 
 			crate::aux_schema::write_voter_set_state(&*self.client, &set_state)?;
 
@@ -1372,14 +1377,22 @@ pub(crate) enum JustificationOrCommit<Block: BlockT, Id = AuthorityId, Sig = Aut
 	Commit((RoundNumber, CommitOf<Block::Header, Sig, Id>)),
 }
 
-impl<Block: BlockT, Id, Sig> From<(RoundNumber, CommitOf<Block::Header, Sig, Id>)> for JustificationOrCommit<Block, Id, Sig> {
-	fn from(commit: (RoundNumber, CommitOf<Block::Header, Sig, Id>)) -> JustificationOrCommit<Block, Id, Sig> {
+impl<Block: BlockT, Id, Sig> From<(RoundNumber, CommitOf<Block::Header, Sig, Id>)>
+	for JustificationOrCommit<Block, Id, Sig>
+{
+	fn from(
+		commit: (RoundNumber, CommitOf<Block::Header, Sig, Id>),
+	) -> JustificationOrCommit<Block, Id, Sig> {
 		JustificationOrCommit::Commit(commit)
 	}
 }
 
-impl<Block: BlockT, Id, Sig> From<GrandpaJustification<Block, Id, Sig>> for JustificationOrCommit<Block, Id, Sig> {
-	fn from(justification: GrandpaJustification<Block, Id, Sig>) -> JustificationOrCommit<Block, Id, Sig> {
+impl<Block: BlockT, Id, Sig> From<GrandpaJustification<Block, Id, Sig>>
+	for JustificationOrCommit<Block, Id, Sig>
+{
+	fn from(
+		justification: GrandpaJustification<Block, Id, Sig>,
+	) -> JustificationOrCommit<Block, Id, Sig> {
 		JustificationOrCommit::Justification(justification)
 	}
 }
@@ -1620,10 +1633,10 @@ where
 			.map_err(|e| Error::Safety(e.to_string()))?;
 
 		// send a justification notification if a sender exists and in case of error log it.
-	fn notify_justification<Block: BlockT, Id: Clone, Sig: Clone>(
-		justification_sender: Option<&GrandpaJustificationSender<Block, Id, Sig>>,
-		justification: impl FnOnce() -> Result<GrandpaJustification<Block, Id, Sig>, Error>,
-	) {
+		fn notify_justification<Block: BlockT, Id: Clone, Sig: Clone>(
+			justification_sender: Option<&GrandpaJustificationSender<Block, Id, Sig>>,
+			justification: impl FnOnce() -> Result<GrandpaJustification<Block, Id, Sig>, Error>,
+		) {
 			if let Some(sender) = justification_sender {
 				if let Err(err) = sender.notify(justification) {
 					warn!(

@@ -20,7 +20,6 @@
 #![cfg(test)]
 
 use crate::{self as pallet_grandpa, AuthorityId, AuthorityList, Config};
-use sp_consensus_grandpa::ConsensusLog;
 use codec::Encode;
 use finality_grandpa;
 use frame_election_provider_support::{
@@ -32,7 +31,7 @@ use frame_support::{
 	traits::{ConstU128, ConstU32, ConstU64, OnFinalize, OnInitialize},
 };
 use pallet_session::historical as pallet_session_historical;
-use sp_consensus_grandpa::{RoundNumber, SetId, GRANDPA_ENGINE_ID};
+use sp_consensus_grandpa::{ConsensusLog, RoundNumber, SetId, GRANDPA_ENGINE_ID};
 use sp_core::{ConstBool, H256};
 use sp_keyring::Ed25519Keyring;
 use sp_runtime::{
@@ -321,7 +320,12 @@ pub fn generate_equivocation_proof(
 	set_id: SetId,
 	vote1: (RoundNumber, H256, u64, &Ed25519Keyring),
 	vote2: (RoundNumber, H256, u64, &Ed25519Keyring),
-) -> sp_consensus_grandpa::EquivocationProofOf<H256, u64, AuthorityId, sp_consensus_grandpa::AuthoritySignature> {
+) -> sp_consensus_grandpa::EquivocationProofOf<
+	H256,
+	u64,
+	AuthorityId,
+	sp_consensus_grandpa::AuthoritySignature,
+> {
 	let signed_prevote = |round, hash, number, keyring: &Ed25519Keyring| {
 		let prevote = finality_grandpa::Prevote { target_hash: hash, target_number: number };
 

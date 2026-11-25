@@ -124,7 +124,15 @@ pub mod pallet {
 		/// (from an offchain context).
 		type EquivocationReportSystem: OffenceReportSystem<
 			Option<Self::AccountId>,
-			(EquivocationProofOf<Self::Hash, BlockNumberFor<Self>, Self::AuthorityId, Self::AuthoritySignature>, Self::KeyOwnerProof),
+			(
+				EquivocationProofOf<
+					Self::Hash,
+					BlockNumberFor<Self>,
+					Self::AuthorityId,
+					Self::AuthoritySignature,
+				>,
+				Self::KeyOwnerProof,
+			),
 		>;
 
 		/// The GRANDPA authority identifier type. Default is Ed25519, can be configured for
@@ -161,10 +169,7 @@ pub mod pallet {
 						))
 					} else {
 						Self::deposit_log(ConsensusLogOf::<_, T::AuthorityId>::ScheduledChange(
-							ScheduledChangeOf {
-								delay: pending_change.delay,
-								next_authorities,
-							},
+							ScheduledChangeOf { delay: pending_change.delay, next_authorities },
 						));
 					}
 				}
@@ -223,7 +228,14 @@ pub mod pallet {
 		))]
 		pub fn report_equivocation(
 			origin: OriginFor<T>,
-			equivocation_proof: Box<EquivocationProofOf<T::Hash, BlockNumberFor<T>, T::AuthorityId, T::AuthoritySignature>>,
+			equivocation_proof: Box<
+				EquivocationProofOf<
+					T::Hash,
+					BlockNumberFor<T>,
+					T::AuthorityId,
+					T::AuthoritySignature,
+				>,
+			>,
 			key_owner_proof: T::KeyOwnerProof,
 		) -> DispatchResultWithPostInfo {
 			let reporter = ensure_signed(origin)?;
@@ -252,7 +264,14 @@ pub mod pallet {
 		))]
 		pub fn report_equivocation_unsigned(
 			origin: OriginFor<T>,
-			equivocation_proof: Box<EquivocationProofOf<T::Hash, BlockNumberFor<T>, T::AuthorityId, T::AuthoritySignature>>,
+			equivocation_proof: Box<
+				EquivocationProofOf<
+					T::Hash,
+					BlockNumberFor<T>,
+					T::AuthorityId,
+					T::AuthoritySignature,
+				>,
+			>,
 			key_owner_proof: T::KeyOwnerProof,
 		) -> DispatchResultWithPostInfo {
 			ensure_none(origin)?;
@@ -663,7 +682,12 @@ impl<T: Config> Pallet<T> {
 	/// will push the transaction to the pool. Only useful in an offchain
 	/// context.
 	pub fn submit_unsigned_equivocation_report(
-		equivocation_proof: EquivocationProofOf<T::Hash, BlockNumberFor<T>, T::AuthorityId, T::AuthoritySignature>,
+		equivocation_proof: EquivocationProofOf<
+			T::Hash,
+			BlockNumberFor<T>,
+			T::AuthorityId,
+			T::AuthoritySignature,
+		>,
 		key_owner_proof: T::KeyOwnerProof,
 	) -> Option<()> {
 		T::EquivocationReportSystem::publish_evidence((equivocation_proof, key_owner_proof)).ok()

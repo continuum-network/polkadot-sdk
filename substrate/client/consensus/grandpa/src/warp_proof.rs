@@ -284,8 +284,7 @@ pub struct NetworkProvider<
 	_sig: PhantomData<fn() -> Sig>,
 }
 
-impl<Block: BlockT, Backend: ClientBackend<Block>, Id, Sig>
-	NetworkProvider<Block, Backend, Id, Sig>
+impl<Block: BlockT, Backend: ClientBackend<Block>, Id, Sig> NetworkProvider<Block, Backend, Id, Sig>
 where
 	NumberFor<Block>: BlockNumberOps,
 {

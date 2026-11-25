@@ -63,8 +63,11 @@ impl BackingGroupConnectionHelper {
 	}
 
 	/// Update the current slot and initiate connections to backing groups if needed.
-	pub async fn update<P>(&mut self, current_slot: Slot, authorities: &[<P as sp_core::Pair>::Public])
-	where
+	pub async fn update<P>(
+		&mut self,
+		current_slot: Slot,
+		authorities: &[<P as sp_core::Pair>::Public],
+	) where
 		P: sp_core::Pair
 			+ sp_application_crypto::AppCrypto<Public = <P as sp_core::Pair>::Public>
 			+ Send
@@ -229,8 +232,13 @@ async fn can_build_upon<Block: BlockT, Client, P>(
 ) -> Option<SlotClaim<<P as Pair>::Public>>
 where
 	Client: ProvideRuntimeApi<Block>,
-	Client::Api: AuraApi<Block, <P as Pair>::Public> + AuraUnincludedSegmentApi<Block> + ApiExt<Block>,
-	P: Pair + sp_application_crypto::AppCrypto<Public = <P as Pair>::Public, Signature = <P as Pair>::Signature>,
+	Client::Api:
+		AuraApi<Block, <P as Pair>::Public> + AuraUnincludedSegmentApi<Block> + ApiExt<Block>,
+	P: Pair
+		+ sp_application_crypto::AppCrypto<
+			Public = <P as Pair>::Public,
+			Signature = <P as Pair>::Signature,
+		>,
 	<P as Pair>::Public: Codec,
 	<P as Pair>::Signature: Codec,
 {

@@ -35,8 +35,8 @@ pub use crate::{
 	types::ProtocolName,
 };
 
-pub use sc_network_types::{build_multiaddr, ed25519};
 use libp2p::identity::{self as libp2p_identity, Keypair as Libp2pKeypair};
+pub use sc_network_types::{build_multiaddr, ed25519};
 use sc_network_types::{
 	multiaddr::{self, Multiaddr},
 	PeerId,
@@ -384,8 +384,9 @@ impl NodeKeyConfig {
 		match self {
 			MlDsa65(Secret::New) => Ok(Libp2pKeypair::generate_mldsa65()),
 
-			MlDsa65(Secret::Input(k)) =>
-				Ok(Libp2pKeypair::from(libp2p_identity::mldsa65::Keypair::from(k))),
+			MlDsa65(Secret::Input(k)) => {
+				Ok(Libp2pKeypair::from(libp2p_identity::mldsa65::Keypair::from(k)))
+			},
 
 			MlDsa65(Secret::File(f)) => {
 				reject_legacy_ed25519_node_key(&f)?;
@@ -1082,8 +1083,9 @@ mod tests {
 		let tmp = tempdir_with_prefix("legacy");
 		std::fs::write(tmp.path().join(NODE_KEY_ED25519_FILE_LEGACY), [0u8; 32]).unwrap();
 		let mldsa_path = tmp.path().join(NODE_KEY_MLDSA65_FILE);
-		let err =
-			NodeKeyConfig::MlDsa65(Secret::File(mldsa_path.clone())).into_keypair().unwrap_err();
+		let err = NodeKeyConfig::MlDsa65(Secret::File(mldsa_path.clone()))
+			.into_keypair()
+			.unwrap_err();
 		assert!(err.to_string().contains("legacy ed25519"));
 		assert!(!mldsa_path.exists());
 	}

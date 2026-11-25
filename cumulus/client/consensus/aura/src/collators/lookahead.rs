@@ -181,7 +181,13 @@ where
 	Proposer: Environment<Block> + Clone + Send + Sync + 'static,
 	CS: CollatorServiceInterface<Block> + Send + Sync + 'static,
 	CHP: consensus_common::ValidationCodeHashProvider<Block::Hash> + Send + 'static,
-	P: Pair + sp_application_crypto::AppCrypto<Public = <P as Pair>::Public, Signature = <P as Pair>::Signature> + Send + Sync + 'static,
+	P: Pair
+		+ sp_application_crypto::AppCrypto<
+			Public = <P as Pair>::Public,
+			Signature = <P as Pair>::Signature,
+		> + Send
+		+ Sync
+		+ 'static,
 	<P as Pair>::Public: AppPublic + Member + Codec,
 	<P as Pair>::Signature: TryFrom<Vec<u8>> + Member + Codec,
 {
@@ -235,7 +241,13 @@ where
 	Proposer: Environment<Block> + Clone + Send + Sync + 'static,
 	CS: CollatorServiceInterface<Block> + Send + Sync + 'static,
 	CHP: consensus_common::ValidationCodeHashProvider<Block::Hash> + Send + 'static,
-	P: Pair + sp_application_crypto::AppCrypto<Public = <P as Pair>::Public, Signature = <P as Pair>::Signature> + Send + Sync + 'static,
+	P: Pair
+		+ sp_application_crypto::AppCrypto<
+			Public = <P as Pair>::Public,
+			Signature = <P as Pair>::Signature,
+		> + Send
+		+ Sync
+		+ 'static,
 	<P as Pair>::Public: AppPublic + Member + Codec,
 	<P as Pair>::Signature: TryFrom<Vec<u8>> + Member + Codec,
 {
@@ -333,12 +345,13 @@ where
 			let para_client = &*params.para_client;
 			let keystore = &params.keystore;
 			let can_build_upon = |block_hash| {
-				let (slot_now, relay_slot, timestamp) = get_parachain_slot::<_, _, <P as Pair>::Public>(
-					para_client,
-					block_hash,
-					&relay_parent_header,
-					params.relay_chain_slot_duration,
-				)?;
+				let (slot_now, relay_slot, timestamp) =
+					get_parachain_slot::<_, _, <P as Pair>::Public>(
+						para_client,
+						block_hash,
+						&relay_parent_header,
+						params.relay_chain_slot_duration,
+					)?;
 
 				Some(super::can_build_upon::<_, _, P>(
 					slot_now,
@@ -366,12 +379,13 @@ where
 			}
 
 			// Trigger pre-connect to backing groups if necessary.
-			if let Some((slot_now, _relay_slot, _timestamp)) = get_parachain_slot::<_, _, <P as Pair>::Public>(
-				para_client,
-				parent_hash,
-				&relay_parent_header,
-				params.relay_chain_slot_duration,
-			) {
+			if let Some((slot_now, _relay_slot, _timestamp)) =
+				get_parachain_slot::<_, _, <P as Pair>::Public>(
+					para_client,
+					parent_hash,
+					&relay_parent_header,
+					params.relay_chain_slot_duration,
+				) {
 				let mut runtime_api = para_client.runtime_api();
 				runtime_api.set_call_context(sp_core::traits::CallContext::Onchain);
 				if let Ok(authorities) = runtime_api.authorities(parent_hash) {

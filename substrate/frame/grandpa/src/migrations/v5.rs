@@ -85,10 +85,8 @@ where
 	fn on_runtime_upgrade() -> Weight {
 		// Convert the legacy AuthorityList to the new generic type
 		let legacy_list = load_authority_list();
-		let converted_list: Vec<(T::AuthorityId, _)> = legacy_list
-			.into_iter()
-			.map(|(id, weight)| (id.into(), weight))
-			.collect();
+		let converted_list: Vec<(T::AuthorityId, _)> =
+			legacy_list.into_iter().map(|(id, weight)| (id.into(), weight)).collect();
 
 		crate::Authorities::<T>::put(
 			&BoundedAuthorityListOf::<T>::force_from(

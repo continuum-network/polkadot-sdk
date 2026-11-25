@@ -111,7 +111,11 @@ where
 	BI: BlockImport<Block> + ParachainBlockImportMarker + Send + Sync + 'static,
 	Proposer: Environment<Block> + Clone + Send + Sync + 'static,
 	CS: CollatorServiceInterface<Block> + Send + Sync + 'static,
-	P: Pair + sp_application_crypto::AppCrypto<Public = <P as Pair>::Public, Signature = <P as Pair>::Signature>,
+	P: Pair
+		+ sp_application_crypto::AppCrypto<
+			Public = <P as Pair>::Public,
+			Signature = <P as Pair>::Signature,
+		>,
 	<P as Pair>::Public: AppPublic + Member + Codec,
 	<P as Pair>::Signature: TryFrom<Vec<u8>> + Member + Codec,
 {

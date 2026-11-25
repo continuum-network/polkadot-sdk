@@ -479,7 +479,8 @@ mod tests {
 		let set_id = 1;
 		let round = 8;
 		let commit = create_commit(blocks[7].clone(), round, set_id, &[alice]);
-		let grandpa_just = GrandpaJustification::<Block>::from_commit(&client, round, commit).unwrap();
+		let grandpa_just =
+			GrandpaJustification::<Block>::from_commit(&client, round, commit).unwrap();
 
 		let finality_proof = FinalityProof {
 			block: header(2).hash(),
@@ -518,7 +519,8 @@ mod tests {
 
 		let round = 8;
 		let commit = create_commit(block8.clone(), round, 1, &[Ed25519Keyring::Alice]);
-		let grandpa_just8 = GrandpaJustification::<Block>::from_commit(&client, round, commit).unwrap();
+		let grandpa_just8 =
+			GrandpaJustification::<Block>::from_commit(&client, round, commit).unwrap();
 
 		client
 			.finalize_block(block8.hash(), Some((ID, grandpa_just8.encode().clone())))
@@ -579,7 +581,8 @@ mod tests {
 
 		let round = 8;
 		let commit = create_commit(block8.clone(), round, 1, &[Ed25519Keyring::Alice]);
-		let grandpa_just8 = GrandpaJustification::<Block>::from_commit(&client, round, commit).unwrap();
+		let grandpa_just8 =
+			GrandpaJustification::<Block>::from_commit(&client, round, commit).unwrap();
 		store_best_justification(&client, &grandpa_just8);
 
 		// No recent authority set change, so we are in the latest set, and will pickup the best

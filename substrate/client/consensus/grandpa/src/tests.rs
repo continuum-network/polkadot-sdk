@@ -479,7 +479,11 @@ async fn finalize_3_voters_no_observers() {
 	for peer_id in 0..3 {
 		let client = net.lock().peers[peer_id].client().as_client();
 		let justification =
-			crate::aux_schema::best_justification::<_, Block, AuthorityId, AuthoritySignature>(&*client).unwrap().unwrap();
+			crate::aux_schema::best_justification::<_, Block, AuthorityId, AuthoritySignature>(
+				&*client,
+			)
+			.unwrap()
+			.unwrap();
 
 		assert_eq!(justification.justification.commit.target_number, 20);
 	}
@@ -553,7 +557,11 @@ async fn finalize_3_voters_1_full_observer() {
 	for peer_id in 0..4 {
 		let client = net.lock().peers[peer_id].client().as_client();
 		let justification =
-			crate::aux_schema::best_justification::<_, Block, AuthorityId, AuthoritySignature>(&*client).unwrap().unwrap();
+			crate::aux_schema::best_justification::<_, Block, AuthorityId, AuthoritySignature>(
+				&*client,
+			)
+			.unwrap()
+			.unwrap();
 
 		assert_eq!(justification.justification.commit.target_number, 20);
 	}

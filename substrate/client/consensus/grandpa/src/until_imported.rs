@@ -393,7 +393,14 @@ where
 
 /// Helper type definition for the stream which waits until vote targets for
 /// signed messages are imported.
-pub(crate) type UntilVoteTargetImported<Block, BlockStatus, BlockSyncRequester, I, Id = AuthorityId, Sig = AuthoritySignature> = UntilImported<
+pub(crate) type UntilVoteTargetImported<
+	Block,
+	BlockStatus,
+	BlockSyncRequester,
+	I,
+	Id = AuthorityId,
+	Sig = AuthoritySignature,
+> = UntilImported<
 	Block,
 	BlockStatus,
 	BlockSyncRequester,
@@ -563,8 +570,14 @@ where
 
 /// A stream which gates off incoming global messages, i.e. commit and catch up
 /// messages, until all referenced block hashes have been imported.
-pub(crate) type UntilGlobalMessageBlocksImported<Block, BlockStatus, BlockSyncRequester, I, Id = AuthorityId, Sig = AuthoritySignature> =
-	UntilImported<Block, BlockStatus, BlockSyncRequester, I, BlockGlobalMessage<Block, Id, Sig>>;
+pub(crate) type UntilGlobalMessageBlocksImported<
+	Block,
+	BlockStatus,
+	BlockSyncRequester,
+	I,
+	Id = AuthorityId,
+	Sig = AuthoritySignature,
+> = UntilImported<Block, BlockStatus, BlockSyncRequester, I, BlockGlobalMessage<Block, Id, Sig>>;
 
 #[cfg(test)]
 mod tests {
