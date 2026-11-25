@@ -107,17 +107,15 @@ impl Metrics {
 	}
 }
 
-/// The first [`MAX_PROPAGATED_TRANSACTIONS_PER_PEER`] of `transactions` not yet in `known`, which
-/// are marked known; the others stay unknown, for a later propagation.
-fn unknown_to_peer<'a, H: ExHashT, E>(
-	known: &'a mut LruHashSet<H>,
+/// The first `limit` of `transactions` not yet in `known`, which are marked known; the others stay
+/// unknown, for a later propagation.
+fn unknown_to_peer<'k, 'a: 'k, H: ExHashT, E>(
+	known: &'k mut LruHashSet<H>,
 	transactions: &'a [(H, E)],
-) -> impl Iterator<Item = &'a (H, E)> {
+	limit: usize,
+) -> impl Iterator<Item = &'a (H, E)> + 'k {
 	// `take` stops pulling before `filter` marks a transaction it would not send.
-	transactions
-		.iter()
-		.filter(|(hash, _)| known.insert(hash.clone()))
-		.take(MAX_PROPAGATED_TRANSACTIONS_PER_PEER)
+	transactions.iter().filter(|(hash, _)| known.insert(hash.clone())).take(limit)
 }
 
 struct PendingTransaction<H> {
@@ -300,6 +298,28 @@ struct Peer<H: ExHashT> {
 	/// Holds a set of transactions known to this peer.
 	known_transactions: LruHashSet<H>,
 	role: ObservedRole,
+	/// Transactions sent by the immediate propagation since the last periodic round.
+	immediate_sent: usize,
+}
+
+impl<H: ExHashT> Peer<H> {
+	/// The transactions to send to this peer now (marked known): at most
+	/// [`MAX_PROPAGATED_TRANSACTIONS_PER_PEER`] for a periodic round, which also resets the
+	/// immediate budget, and what is left of [`MAX_IMMEDIATE_TRANSACTIONS_PER_PEER`] otherwise.
+	fn to_send<'a, E>(&mut self, transactions: &'a [(H, E)], immediate: bool) -> Vec<&'a (H, E)> {
+		let limit = if immediate {
+			MAX_IMMEDIATE_TRANSACTIONS_PER_PEER.saturating_sub(self.immediate_sent)
+		} else {
+			self.immediate_sent = 0;
+			MAX_PROPAGATED_TRANSACTIONS_PER_PEER
+		};
+		let sent: Vec<_> =
+			unknown_to_peer(&mut self.known_transactions, transactions, limit).collect();
+		if immediate {
+			self.immediate_sent += sent.len();
+		}
+		sent
+	}
 }
 
 impl<B, H, N, S> TransactionsHandler<B, H, N, S>
@@ -373,6 +393,7 @@ where
 							NonZeroUsize::new(MAX_KNOWN_TRANSACTIONS).expect("Constant is nonzero"),
 						),
 						role,
+						immediate_sent: 0,
 					},
 				);
 				debug_assert!(_was_in.is_none());
@@ -481,7 +502,8 @@ where
 
 		debug!(target: LOG_TARGET, "Propagating transaction [{:?}]", hash);
 		if let Some(transaction) = self.transaction_pool.transaction(hash) {
-			let propagated_to = self.do_propagate_transactions(&[(hash.clone(), transaction)]);
+			let propagated_to =
+				self.do_propagate_transactions(&[(hash.clone(), transaction)], true);
 			self.transaction_pool.on_broadcasted(propagated_to);
 		} else {
 			debug!(target: "sync", "Propagating transaction failure [{:?}]", hash);
@@ -491,6 +513,7 @@ where
 	fn do_propagate_transactions(
 		&mut self,
 		transactions: &[(H, Arc<B::Extrinsic>)],
+		immediate: bool,
 	) -> HashMap<H, Vec<String>> {
 		let mut propagated_to = HashMap::<_, Vec<_>>::new();
 		let mut propagated_transactions = 0;
@@ -502,7 +525,7 @@ where
 			}
 
 			let (hashes, to_send): (Vec<_>, Transactions<_>) =
-				unknown_to_peer(&mut peer.known_transactions, transactions).cloned().unzip();
+				peer.to_send(transactions, immediate).into_iter().cloned().unzip();
 
 			propagated_transactions += hashes.len();
 
@@ -550,7 +573,7 @@ where
 
 		debug!(target: LOG_TARGET, "Propagating transactions");
 
-		let propagated_to = self.do_propagate_transactions(&transactions);
+		let propagated_to = self.do_propagate_transactions(&transactions, false);
 		self.transaction_pool.on_broadcasted(propagated_to);
 	}
 }
@@ -567,12 +590,49 @@ mod tests {
 		let mut known = LruHashSet::new(NonZeroUsize::new(MAX_KNOWN_TRANSACTIONS).unwrap());
 		let mut sent = Vec::new();
 		for _ in 0..5 {
-			let round: Vec<u64> = unknown_to_peer(&mut known, &pool).map(|(h, _)| *h).collect();
+			let round: Vec<u64> =
+				unknown_to_peer(&mut known, &pool, MAX_PROPAGATED_TRANSACTIONS_PER_PEER)
+					.map(|(h, _)| *h)
+					.collect();
 			assert!(round.len() <= MAX_PROPAGATED_TRANSACTIONS_PER_PEER);
 			sent.extend(round);
 		}
 		assert_eq!(sent, (0..5000).collect::<Vec<_>>());
-		assert_eq!(unknown_to_peer(&mut known, &pool).count(), 0);
+		assert_eq!(
+			unknown_to_peer(&mut known, &pool, MAX_PROPAGATED_TRANSACTIONS_PER_PEER).count(),
+			0
+		);
 		assert!(MAX_PROPAGATED_TRANSACTIONS_PER_PEER < 2048);
+	}
+
+	/// A burst of immediate propagations to one peer sends at most the immediate budget; the rest
+	/// stay unknown and go in the following (capped) periodic rounds, which reset the budget.
+	#[test]
+	fn immediate_propagation_is_budgeted_and_deferred_to_periodic_rounds() {
+		const N: u64 = 2000;
+		let pool: Vec<(u64, ())> = (0..N).map(|h| (h, ())).collect();
+		let mut peer = Peer {
+			known_transactions: LruHashSet::new(NonZeroUsize::new(MAX_KNOWN_TRANSACTIONS).unwrap()),
+			role: ObservedRole::Full,
+			immediate_sent: 0,
+		};
+		let immediate: usize =
+			pool.iter().map(|tx| peer.to_send(std::slice::from_ref(tx), true).len()).sum();
+		assert_eq!(immediate, MAX_IMMEDIATE_TRANSACTIONS_PER_PEER);
+
+		let mut sent = MAX_IMMEDIATE_TRANSACTIONS_PER_PEER;
+		while sent < N as usize {
+			let round = peer.to_send(&pool, false).len();
+			assert!(round > 0 && round <= MAX_PROPAGATED_TRANSACTIONS_PER_PEER);
+			sent += round;
+		}
+		assert_eq!(sent, N as usize);
+		assert!(peer.to_send(&pool, false).is_empty());
+		// The periodic round reset the budget.
+		assert_eq!(peer.immediate_sent, 0);
+		assert!(
+			MAX_IMMEDIATE_TRANSACTIONS_PER_PEER + MAX_PROPAGATED_TRANSACTIONS_PER_PEER <=
+				2048 * 2 / 3
+		);
 	}
 }

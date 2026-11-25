@@ -39,6 +39,12 @@ pub(crate) const MAX_KNOWN_TRANSACTIONS: usize = 10240; // ~300kb per peer + ove
 /// buffer is left for other notifications. The rest are not marked known and go in later rounds.
 pub(crate) const MAX_PROPAGATED_TRANSACTIONS_PER_PEER: usize = 1024;
 
+/// Maximum number of transactions sent to a peer by the immediate (per-import) propagation between
+/// two periodic rounds. Over budget they are not marked known, so the next (capped) periodic round
+/// sends them. Together with the periodic cap a peer gets at most 1280 per round, well under the
+/// 2048-message buffer.
+pub(crate) const MAX_IMMEDIATE_TRANSACTIONS_PER_PEER: usize = 256;
+
 /// Maximum allowed size for a transactions notification.
 pub(crate) const MAX_TRANSACTIONS_SIZE: u64 = MAX_RESPONSE_SIZE;
 
