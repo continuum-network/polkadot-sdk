@@ -43,6 +43,7 @@ use crate::{
 		self,
 		base_pool::{TimedTransactionSource, Transaction},
 		BlockHash, ExtrinsicFor, ExtrinsicHash, IsValidator, Options, RawExtrinsicFor,
+		ValidatedTransaction,
 	},
 	insert_and_log_throttled, ReadyIteratorFor, ValidateTransactionPriority, LOG_TARGET,
 	LOG_TARGET_STAT,
@@ -57,9 +58,9 @@ use futures::{
 use parking_lot::Mutex;
 use prometheus_endpoint::Registry as PrometheusRegistry;
 use sc_transaction_pool_api::{
-	error::Error as TxPoolApiError, ChainEvent, ImportNotificationStream,
-	MaintainedTransactionPool, PoolStatus, TransactionFor, TransactionPool, TransactionSource,
-	TransactionStatusStreamFor, TxHash, TxInvalidityReportMap,
+	error::{Error as TxPoolApiError, IntoPoolError},
+	ChainEvent, ImportNotificationStream, MaintainedTransactionPool, PoolStatus, TransactionFor,
+	TransactionPool, TransactionSource, TransactionStatusStreamFor, TxHash, TxInvalidityReportMap,
 };
 use sp_blockchain::{HashAndNumber, TreeRoute};
 use sp_core::traits::SpawnEssentialNamed;
@@ -1892,8 +1893,13 @@ where
 			)
 			.await;
 
-		let Some(priority) = validated_tx.priority() else {
-			return Err(TxPoolApiError::ImmediatelyDropped);
+		let priority = match validated_tx {
+			ValidatedTransaction::Valid(Transaction { priority, .. }) => priority,
+			// Surface the real verdict (e.g. `BadProof`) so the sender is scored for it rather
+			// than for a full pool. Non-pool errors (runtime/blockchain) carry no tx verdict.
+			ValidatedTransaction::Invalid(_, e) | ValidatedTransaction::Unknown(_, e) => {
+				return Err(e.into_pool_error().unwrap_or(TxPoolApiError::ImmediatelyDropped))
+			},
 		};
 
 		let insertion_info = self

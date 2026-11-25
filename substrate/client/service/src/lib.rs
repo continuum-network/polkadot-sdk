@@ -505,6 +505,9 @@ fn pool_error_to_import(e: &sc_transaction_pool_api::error::Error) -> Transactio
 		// mempool limit) depend on *our* pool state, so an honest relayer must never be banned
 		// for them; but they may have cost us a validation, so the -16 "any transaction" stays.
 		Error::ImmediatelyDropped | Error::TooLowPriority { .. } => TransactionImport::None,
+		// Our own best-hash race (the block we validated at vanished): not the peer's fault, but
+		// keep the -16 so it can't become a free validation.
+		Error::InvalidBlockId(_) => TransactionImport::None,
 		// Stale/unknown (the latter used by our nonce cap) needed a runtime call, so they get a
 		// small penalty that only floods add up.
 		Error::InvalidTransaction(InvalidTransaction::Stale) |
@@ -512,6 +515,17 @@ fn pool_error_to_import(e: &sc_transaction_pool_api::error::Error) -> Transactio
 		Error::UnknownTransaction(UnknownTransaction::CannotLookup) => TransactionImport::Outdated,
 		// Includes `UnknownTransaction::NoUnsignedValidator`: an honest peer never relays it.
 		_ => TransactionImport::Bad,
+	}
+}
+
+/// Maps any `submit_one` error to the peer reputation outcome.
+fn submit_error_to_import<E: IntoPoolError>(e: E) -> TransactionImport {
+	match e.into_pool_error() {
+		Ok(e) => pool_error_to_import(&e),
+		// Runtime/blockchain errors, including a trap in `validate_transaction`. They may be our
+		// node's fault (missing state, validation pool down/canceled), so no `Bad`; but they cost
+		// a validation, so the -16 stays instead of a `KnownGood` refund.
+		Err(_) => TransactionImport::None,
 	}
 }
 
@@ -565,14 +579,7 @@ where
 					trace!(target: sc_transaction_pool::LOG_TARGET, "import transaction: {elapsed:?}");
 					TransactionImport::NewGood
 				},
-				Err(e) => match e.into_pool_error() {
-					Ok(e) => pool_error_to_import(&e),
-					Err(_) => {
-						// it is not bad at least, just some internal node logic error, so peer is
-						// innocent.
-						TransactionImport::KnownGood
-					},
-				},
+				Err(e) => submit_error_to_import(e),
 			}
 		})
 	}
@@ -647,7 +654,11 @@ mod tests {
 		for e in &neutral {
 			assert!(matches!(pool_error_to_import(e), TransactionImport::KnownGood), "{e:?}");
 		}
-		let unrefunded = [Error::ImmediatelyDropped, Error::TooLowPriority { old: 10, new: 5 }];
+		let unrefunded = [
+			Error::ImmediatelyDropped,
+			Error::TooLowPriority { old: 10, new: 5 },
+			Error::InvalidBlockId("best hash raced".into()),
+		];
 		for e in &unrefunded {
 			assert!(matches!(pool_error_to_import(e), TransactionImport::None), "{e:?}");
 		}
@@ -675,5 +686,25 @@ mod tests {
 		for e in &bad {
 			assert!(matches!(pool_error_to_import(e), TransactionImport::Bad), "{e:?}");
 		}
+	}
+
+	#[test]
+	fn runtime_validation_trap_is_not_refunded() {
+		// Stand-in for `sc_transaction_pool`'s private `Error::RuntimeApi`: any non-pool error.
+		#[derive(Debug)]
+		struct Trap;
+		impl std::fmt::Display for Trap {
+			fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+				f.write_str("wasm trap: unreachable")
+			}
+		}
+		impl std::error::Error for Trap {}
+		impl IntoPoolError for Trap {}
+		assert!(matches!(submit_error_to_import(Trap), TransactionImport::None));
+		// Pool errors still go through the pool mapping.
+		let bad = sc_transaction_pool_api::error::Error::InvalidTransaction(
+			sp_runtime::transaction_validity::InvalidTransaction::BadProof,
+		);
+		assert!(matches!(submit_error_to_import(bad), TransactionImport::Bad));
 	}
 }

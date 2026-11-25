@@ -25,8 +25,9 @@ use futures::{executor::block_on, FutureExt};
 use sc_transaction_pool::ChainApi;
 use sc_transaction_pool_api::{
 	error::Error as TxPoolError, LocalTransactionPool, MaintainedTransactionPool, TransactionPool,
-	TransactionStatus,
+	TransactionSource, TransactionStatus,
 };
+use sp_runtime::transaction_validity::InvalidTransaction;
 use substrate_test_runtime_client::Sr25519Keyring::*;
 use substrate_test_runtime_transaction_pool::uxt;
 use tracing::info;
@@ -558,4 +559,46 @@ fn fatp_prios_submit_local_full_mempool_higher_prio_is_accepted() {
 	assert_ready_iterator!(header01.hash(), pool, []);
 	assert_ready_iterator!(header02.hash(), pool, [xt3, xt2]);
 	assert_ready_iterator!(header03.hash(), pool, [xt5, xt4]);
+}
+
+#[test]
+fn fatp_prios_full_mempool_gossiped_tx_keeps_real_error() {
+	sp_tracing::try_init_simple();
+
+	let builder = TestPoolBuilder::new();
+	let (pool, api, _) = builder.with_mempool_count_limit(2).with_ready_count(2).build();
+	api.set_nonce(api.genesis_hash(), Bob.into(), 300);
+	api.set_nonce(api.genesis_hash(), Charlie.into(), 400);
+	api.set_nonce(api.genesis_hash(), Dave.into(), 500);
+
+	let header01 = api.push_block(1, vec![], true);
+	block_on(pool.maintain(new_best_block_event(&pool, None, header01.hash())));
+
+	let xt0 = uxt(Alice, 200);
+	let xt1 = uxt(Bob, 300);
+	let bad = uxt(Charlie, 400);
+	let low = uxt(Dave, 500);
+	api.set_priority(&xt0, 2);
+	api.set_priority(&xt1, 2);
+	api.set_priority(&bad, 10);
+	api.set_priority(&low, 1);
+	// longevity 0 at block 1 makes the test api answer `BadProof`.
+	api.set_valid_till(&bad, 1);
+
+	block_on(pool.submit_one(invalid_hash(), TransactionSource::External, xt0)).unwrap();
+	block_on(pool.submit_one(invalid_hash(), TransactionSource::External, xt1)).unwrap();
+	assert_eq!(block_on(pool.mempool_len()).0, 2);
+
+	// Full mempool + invalid tx: the validation verdict must surface, not `ImmediatelyDropped`.
+	let r = block_on(pool.submit_one(invalid_hash(), TransactionSource::External, bad));
+	assert!(
+		matches!(
+			r.as_ref().unwrap_err().0,
+			TxPoolError::InvalidTransaction(InvalidTransaction::BadProof)
+		),
+		"{r:?}"
+	);
+	// Full mempool + valid tx with nothing to replace: still `ImmediatelyDropped`.
+	let r = block_on(pool.submit_one(invalid_hash(), TransactionSource::External, low));
+	assert!(matches!(r.as_ref().unwrap_err().0, TxPoolError::ImmediatelyDropped), "{r:?}");
 }
