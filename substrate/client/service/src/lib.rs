@@ -499,13 +499,12 @@ fn pool_error_to_import(e: &sc_transaction_pool_api::error::Error) -> Transactio
 	use sp_runtime::transaction_validity::{InvalidTransaction, UnknownTransaction};
 	match e {
 		// Late gossip of txs just included in (or pruned by) a block is honest. Pool-level
-		// rejections cost us nothing, so they are neutral. So are pool-full / replacement
-		// rejections (`ImmediatelyDropped` also covers the fork-aware mempool limit): they depend
-		// on *our* pool state, and penalising them lets spam get honest relayers banned.
-		Error::AlreadyImported(_) |
-		Error::TemporarilyBanned |
-		Error::ImmediatelyDropped |
-		Error::TooLowPriority { .. } => TransactionImport::KnownGood,
+		// rejections cost us nothing, so they are neutral.
+		Error::AlreadyImported(_) | Error::TemporarilyBanned => TransactionImport::KnownGood,
+		// Pool-full / replacement rejections (`ImmediatelyDropped` also covers the fork-aware
+		// mempool limit) depend on *our* pool state, so an honest relayer must never be banned
+		// for them; but they may have cost us a validation, so the -16 "any transaction" stays.
+		Error::ImmediatelyDropped | Error::TooLowPriority { .. } => TransactionImport::None,
 		// Stale/unknown (the latter used by our nonce cap) needed a runtime call, so they get a
 		// small penalty that only floods add up.
 		Error::InvalidTransaction(InvalidTransaction::Stale) |
@@ -644,14 +643,13 @@ mod tests {
 	fn gossip_of_just_included_txs_is_not_penalised() {
 		use sc_transaction_pool_api::error::Error;
 		use sp_runtime::transaction_validity::{InvalidTransaction as I, UnknownTransaction as U};
-		let neutral = [
-			Error::TemporarilyBanned,
-			Error::AlreadyImported(Box::new(())),
-			Error::ImmediatelyDropped,
-			Error::TooLowPriority { old: 10, new: 5 },
-		];
+		let neutral = [Error::TemporarilyBanned, Error::AlreadyImported(Box::new(()))];
 		for e in &neutral {
 			assert!(matches!(pool_error_to_import(e), TransactionImport::KnownGood), "{e:?}");
+		}
+		let unrefunded = [Error::ImmediatelyDropped, Error::TooLowPriority { old: 10, new: 5 }];
+		for e in &unrefunded {
+			assert!(matches!(pool_error_to_import(e), TransactionImport::None), "{e:?}");
 		}
 		let outdated = [
 			Error::InvalidTransaction(I::Stale),
