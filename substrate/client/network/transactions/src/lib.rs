@@ -81,6 +81,9 @@ mod rep {
 	pub const GOOD_TRANSACTION: Rep = Rep::new(1 << 7, "Good transaction");
 	/// Reputation change when a peer sends us a bad transaction.
 	pub const BAD_TRANSACTION: Rep = Rep::new(-(1 << 12), "Bad transaction");
+	/// Reputation change for an outdated tx: honest gossip races cost little, but sustained
+	/// replays (each costs us a runtime validation) still add up to a disconnect.
+	pub const OUTDATED_TRANSACTION: Rep = Rep::new(-(1 << 8), "Outdated transaction");
 }
 
 struct Metrics {
@@ -461,6 +464,7 @@ where
 			},
 			TransactionImport::NewGood => self.network.report_peer(who, rep::GOOD_TRANSACTION),
 			TransactionImport::Bad => self.network.report_peer(who, rep::BAD_TRANSACTION),
+			TransactionImport::Outdated => self.network.report_peer(who, rep::OUTDATED_TRANSACTION),
 			TransactionImport::None => {},
 		}
 	}

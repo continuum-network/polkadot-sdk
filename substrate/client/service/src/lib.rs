@@ -493,6 +493,22 @@ where
 		.collect()
 }
 
+/// Maps a pool rejection of a gossiped transaction to the peer reputation outcome.
+fn pool_error_to_import(e: &sc_transaction_pool_api::error::Error) -> TransactionImport {
+	use sc_transaction_pool_api::error::Error;
+	use sp_runtime::transaction_validity::InvalidTransaction;
+	match e {
+		// Late gossip of txs just included in (or pruned by) a block is honest. Pool-level
+		// rejections cost us nothing, so they are neutral. Stale/unknown (the latter used by our
+		// nonce cap) needed a runtime call, so they get a small penalty that only floods add up.
+		Error::AlreadyImported(_) | Error::TemporarilyBanned => TransactionImport::KnownGood,
+		Error::InvalidTransaction(InvalidTransaction::Stale) | Error::UnknownTransaction(_) => {
+			TransactionImport::Outdated
+		},
+		_ => TransactionImport::Bad,
+	}
+}
+
 impl<B, H, C, Pool, E> sc_network_transactions::config::TransactionPool<H, B>
 	for TransactionPoolAdapter<C, Pool>
 where
@@ -544,10 +560,7 @@ where
 					TransactionImport::NewGood
 				},
 				Err(e) => match e.into_pool_error() {
-					Ok(sc_transaction_pool_api::error::Error::AlreadyImported(_)) => {
-						TransactionImport::KnownGood
-					},
-					Ok(_) => TransactionImport::Bad,
+					Ok(e) => pool_error_to_import(&e),
 					Err(_) => {
 						// it is not bad at least, just some internal node logic error, so peer is
 						// innocent.
@@ -618,5 +631,35 @@ mod tests {
 		// then
 		assert_eq!(transactions.len(), 1);
 		assert!(TransferData::try_from(&*transactions[0].1).is_ok());
+	}
+
+	#[test]
+	fn gossip_of_just_included_txs_is_not_penalised() {
+		use sc_transaction_pool_api::error::Error;
+		use sp_runtime::transaction_validity::{InvalidTransaction as I, UnknownTransaction as U};
+		let neutral = [Error::TemporarilyBanned, Error::AlreadyImported(Box::new(()))];
+		for e in &neutral {
+			assert!(matches!(pool_error_to_import(e), TransactionImport::KnownGood), "{e:?}");
+		}
+		let outdated = [
+			Error::InvalidTransaction(I::Stale),
+			Error::UnknownTransaction(U::CannotLookup),
+			Error::UnknownTransaction(U::NoUnsignedValidator),
+			Error::UnknownTransaction(U::Custom(1)),
+		];
+		for e in &outdated {
+			assert!(matches!(pool_error_to_import(e), TransactionImport::Outdated), "{e:?}");
+		}
+		let bad = [
+			Error::InvalidTransaction(I::BadProof),
+			Error::InvalidTransaction(I::BadSigner),
+			Error::InvalidTransaction(I::Call),
+			Error::InvalidTransaction(I::Payment),
+			Error::InvalidTransaction(I::ExhaustsResources),
+			Error::InvalidTransaction(I::Custom(7)),
+		];
+		for e in &bad {
+			assert!(matches!(pool_error_to_import(e), TransactionImport::Bad), "{e:?}");
+		}
 	}
 }

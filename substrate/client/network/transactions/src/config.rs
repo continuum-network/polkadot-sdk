@@ -54,6 +54,8 @@ pub enum TransactionImport {
 	NewGood,
 	/// Transaction is invalid.
 	Bad,
+	/// Transaction is outdated (stale nonce) or of unknown validity; likely a gossip race.
+	Outdated,
 	/// Transaction import was not performed.
 	None,
 }
