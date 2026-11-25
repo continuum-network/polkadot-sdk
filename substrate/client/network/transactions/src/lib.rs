@@ -101,6 +101,19 @@ impl Metrics {
 	}
 }
 
+/// The first [`MAX_PROPAGATED_TRANSACTIONS_PER_PEER`] of `transactions` not yet in `known`, which
+/// are marked known; the others stay unknown, for a later propagation.
+fn unknown_to_peer<'a, H: ExHashT, E>(
+	known: &'a mut LruHashSet<H>,
+	transactions: &'a [(H, E)],
+) -> impl Iterator<Item = &'a (H, E)> {
+	// `take` stops pulling before `filter` marks a transaction it would not send.
+	transactions
+		.iter()
+		.filter(|(hash, _)| known.insert(hash.clone()))
+		.take(MAX_PROPAGATED_TRANSACTIONS_PER_PEER)
+}
+
 struct PendingTransaction<H> {
 	validation: TransactionImportFuture,
 	tx_hash: H,
@@ -481,11 +494,8 @@ where
 				continue;
 			}
 
-			let (hashes, to_send): (Vec<_>, Transactions<_>) = transactions
-				.iter()
-				.filter(|(hash, _)| peer.known_transactions.insert(hash.clone()))
-				.cloned()
-				.unzip();
+			let (hashes, to_send): (Vec<_>, Transactions<_>) =
+				unknown_to_peer(&mut peer.known_transactions, transactions).cloned().unzip();
 
 			propagated_transactions += hashes.len();
 
@@ -535,5 +545,27 @@ where
 
 		let propagated_to = self.do_propagate_transactions(&transactions);
 		self.transaction_pool.on_broadcasted(propagated_to);
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// A propagation never queues more than the cap for one peer (more overflowed the connection's
+	/// 2048-message sync notification buffer and closed it), and later ones send the rest.
+	#[test]
+	fn propagation_to_a_peer_is_capped_and_resumes() {
+		let pool: Vec<(u64, ())> = (0..5000).map(|h| (h, ())).collect();
+		let mut known = LruHashSet::new(NonZeroUsize::new(MAX_KNOWN_TRANSACTIONS).unwrap());
+		let mut sent = Vec::new();
+		for _ in 0..5 {
+			let round: Vec<u64> = unknown_to_peer(&mut known, &pool).map(|(h, _)| *h).collect();
+			assert!(round.len() <= MAX_PROPAGATED_TRANSACTIONS_PER_PEER);
+			sent.extend(round);
+		}
+		assert_eq!(sent, (0..5000).collect::<Vec<_>>());
+		assert_eq!(unknown_to_peer(&mut known, &pool).count(), 0);
+		assert!(MAX_PROPAGATED_TRANSACTIONS_PER_PEER < 2048);
 	}
 }

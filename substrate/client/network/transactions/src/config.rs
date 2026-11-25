@@ -32,6 +32,13 @@ pub(crate) const PROPAGATE_TIMEOUT: time::Duration = time::Duration::from_millis
 /// This should be approx. 2 blocks full of transactions for the network to function properly.
 pub(crate) const MAX_KNOWN_TRANSACTIONS: usize = 10240; // ~300kb per peer + overhead.
 
+/// Maximum number of transactions sent to one peer per propagation.
+///
+/// Each transaction is its own notification (RFC 56), queued in the connection's sync notification
+/// buffer of 2048 messages; overflowing it makes `sc-network` close the connection. Half of the
+/// buffer is left for other notifications. The rest are not marked known and go in later rounds.
+pub(crate) const MAX_PROPAGATED_TRANSACTIONS_PER_PEER: usize = 1024;
+
 /// Maximum allowed size for a transactions notification.
 pub(crate) const MAX_TRANSACTIONS_SIZE: u64 = MAX_RESPONSE_SIZE;
 
