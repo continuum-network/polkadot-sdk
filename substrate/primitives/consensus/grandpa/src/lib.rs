@@ -978,15 +978,7 @@ where
 		.sign_with(AuthorityId::ID, AuthorityId::CRYPTO_ID, public.as_ref(), &encoded[..])
 		.ok()
 		.flatten()
-		.and_then(|sig_bytes| sig_bytes.try_into().ok())
-		// Fallback to ed25519_sign for compatibility with standard keystores
-		.or_else(|| {
-			keystore
-				.ed25519_sign(AuthorityId::ID, public.as_ref(), &encoded[..])
-				.ok()
-				.flatten()
-				.and_then(|sig| sig.try_into().ok())
-		})?;
+		.and_then(|sig_bytes| sig_bytes.try_into().ok())?;
 
 	Some(finality_grandpa::SignedMessage { message, signature, id: public })
 }
@@ -1011,11 +1003,12 @@ sp_api::decl_runtime_apis! {
 	/// The consensus protocol will coordinate the handoff externally.
 	///
 	/// # Version history
-	/// - **v3**: added [`Self::grandpa_authorities_raw`] for non-ed25519 authority lists.
-	/// - **v4**: added [`Self::submit_report_equivocation_unsigned_extrinsic_raw`] and
+	/// - **v3**: upstream API (unchanged).
+	/// - **v4** (Continuum fork): added [`Self::grandpa_authorities_raw`],
+	///   [`Self::submit_report_equivocation_unsigned_extrinsic_raw`] and
 	///   [`Self::generate_key_ownership_proof_raw`] so Dilithium (and other non-32-byte)
-	///   authority identities can be reported without forcing `AuthorityId`/`AuthoritySignature`
-	///   (ed25519) at the runtime-API boundary.
+	///   authority identities can be used and reported without forcing
+	///   `AuthorityId`/`AuthoritySignature` (ed25519) at the runtime-API boundary.
 	#[api_version(4)]
 	pub trait GrandpaApi {
 		/// Get the current GRANDPA authorities and weights. This should not change except

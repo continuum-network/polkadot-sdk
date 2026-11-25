@@ -18,7 +18,7 @@
 
 use std::{collections::HashMap, marker::PhantomData, sync::Arc};
 
-use codec::Decode;
+use codec::{Decode, DecodeAll};
 use log::debug;
 use parking_lot::Mutex;
 
@@ -541,11 +541,16 @@ where
 				let set_id = self.current_set_id(hash)?;
 				
 				// Decode each authority ID from raw bytes
-				let generic_authorities_for_set: AuthorityListOf<Id> = raw_authorities.iter().map(|(id_bytes, weight)| {
-					let decoded = Id::decode(&mut &id_bytes[..])
-						.expect("Authority ID decode should match types");
-					(decoded, *weight)
-				}).collect();
+				let generic_authorities_for_set: AuthorityListOf<Id> = raw_authorities
+					.iter()
+					.map(|(id_bytes, weight)| {
+						Id::decode_all(&mut &id_bytes[..]).map(|id| (id, *weight)).map_err(|e| {
+							ConsensusError::ClientImport(format!(
+								"Failed to decode GRANDPA authority ID from runtime: {e}"
+							))
+						})
+					})
+					.collect::<Result<_, _>>()?;
 				
 				// Clone for use in voter command notification
 				let authorities_for_voter = generic_authorities_for_set.clone();

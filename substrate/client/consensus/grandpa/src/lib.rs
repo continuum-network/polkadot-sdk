@@ -57,7 +57,7 @@
 #![warn(missing_docs)]
 
 use authorities::AuthorityIdBounds;
-use codec::Decode;
+use codec::{Decode, DecodeAll};
 use futures::{prelude::*, StreamExt};
 use log::{debug, error, info};
 use parking_lot::RwLock;
@@ -564,7 +564,7 @@ where
 				let authorities: Result<Vec<(Id, u64)>, _> = raw_authorities
 					.into_iter()
 					.map(|(id_bytes, weight)| {
-						let id = Id::decode(&mut &id_bytes[..]).map_err(|err| {
+						let id = Id::decode_all(&mut &id_bytes[..]).map_err(|err| {
 							ClientError::CallResultDecode(
 								"failed to decode GRANDPA authority ID from raw bytes",
 								err,

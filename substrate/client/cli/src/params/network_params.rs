@@ -173,17 +173,15 @@ pub struct NetworkParams {
 
 	/// Network backend used for P2P networking.
 	///
-	/// Litep2p is a lightweight alternative to libp2p, that is designed to be more
-	/// efficient and easier to use. At the same time, litep2p brings performance
-	/// improvements and reduces the CPU usage significantly.
+	/// Libp2p is the default and only working backend in this fork.
 	///
-	/// Libp2p is the old network backend, that may still be used for compatibility
-	/// reasons until the whole ecosystem is migrated to litep2p.
+	/// Litep2p is disabled because it does not support ML-DSA-65 node identities;
+	/// selecting it makes the node fail at startup.
 	#[arg(
 		long,
 		value_enum,
 		value_name = "NETWORK_BACKEND",
-		default_value_t = NetworkBackendType::Litep2p,
+		default_value_t = NetworkBackendType::Libp2p,
 		ignore_case = true,
 		verbatim_doc_comment
 	)]
