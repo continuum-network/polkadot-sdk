@@ -24,26 +24,43 @@ use sc_network_common::ExHashT;
 use sp_runtime::traits::Block as BlockT;
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc, time};
 
-/// Interval at which we propagate transactions;
-pub(crate) const PROPAGATE_TIMEOUT: time::Duration = time::Duration::from_millis(2900);
+/// Interval at which we propagate transactions; see [`PER_PEER_ROUND_BUDGET`].
+pub(crate) const PROPAGATE_TIMEOUT: time::Duration = time::Duration::from_millis(500);
 
 /// Maximum number of known transaction hashes to keep for a peer.
 ///
 /// This should be approx. 2 blocks full of transactions for the network to function properly.
 pub(crate) const MAX_KNOWN_TRANSACTIONS: usize = 10240; // ~300kb per peer + overhead.
 
-/// Maximum number of transactions sent to one peer per propagation.
+/// Size of a connection's sync notification buffer in `sc-network`
+/// (`SYNC_NOTIFICATIONS_BUFFER_SIZE`); overflowing it closes the connection
+/// (`SyncNotificationsClogged`). Each transaction is its own notification (RFC 56).
+const SYNC_NOTIFICATIONS_BUFFER: usize = 2048;
+
+/// Most transaction notifications we let pile up for one peer: ~73% of the buffer, leaving room
+/// for other sync notifications.
+pub(crate) const MAX_QUEUED_PER_PEER: usize = 1500;
+const _: () = assert!(MAX_QUEUED_PER_PEER < SYNC_NOTIFICATIONS_BUFFER);
+
+/// Transactions sent to one peer per [`PROPAGATE_TIMEOUT`] round, immediate and periodic together.
 ///
-/// Each transaction is its own notification (RFC 56), queued in the connection's sync notification
-/// buffer of 2048 messages; overflowing it makes `sc-network` close the connection. Half of the
-/// buffer is left for other notifications. The rest are not marked known and go in later rounds.
-pub(crate) const MAX_PROPAGATED_TRANSACTIONS_PER_PEER: usize = 1024;
+/// A peer that reads nothing for a whole round holds at most two rounds, i.e.
+/// [`MAX_QUEUED_PER_PEER`]. A peer that keeps reading holds at most one: on loopback a peer read
+/// 1024 ML-DSA-signed (~5 KB) transactions in 32-173 ms, so a round drains well within 500 ms.
+/// 750 per 500 ms is 1500 tx/s per peer, ~1.7x a full block per second (~890 EIP-1559 txs), so
+/// validators fed by one RPC node can still fill their blocks. The previous 2.9 s round with
+/// 1024 + 256 gave ~440 tx/s and left them half empty.
+const PER_PEER_ROUND_BUDGET: usize = MAX_QUEUED_PER_PEER / 2;
 
 /// Maximum number of transactions sent to a peer by the immediate (per-import) propagation between
-/// two periodic rounds. Over budget they are not marked known, so the next (capped) periodic round
-/// sends them. Together with the periodic cap a peer gets at most 1280 per round, well under the
-/// 2048-message buffer.
-pub(crate) const MAX_IMMEDIATE_TRANSACTIONS_PER_PEER: usize = 256;
+/// two periodic rounds: a fifth of the round budget. Over budget they are not marked known, so the
+/// next (capped) periodic round sends them.
+pub(crate) const MAX_IMMEDIATE_TRANSACTIONS_PER_PEER: usize = PER_PEER_ROUND_BUDGET / 5;
+
+/// Maximum number of transactions sent to one peer per periodic propagation: the rest of the round
+/// budget. The others are not marked known and go in later rounds.
+pub(crate) const MAX_PROPAGATED_TRANSACTIONS_PER_PEER: usize =
+	PER_PEER_ROUND_BUDGET - MAX_IMMEDIATE_TRANSACTIONS_PER_PEER;
 
 /// Maximum allowed size for a transactions notification.
 pub(crate) const MAX_TRANSACTIONS_SIZE: u64 = MAX_RESPONSE_SIZE;
