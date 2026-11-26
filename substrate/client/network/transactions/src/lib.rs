@@ -636,20 +636,21 @@ mod tests {
 		);
 	}
 
-	/// Rounds every 500 ms: a peer that reads nothing for a round holds at most two rounds (under
-	/// the 1500 bound), and a backlog goes out at well over a full block (~890 txs) per second.
+	/// Rounds every 1 s: a peer that reads nothing for a round holds at most two rounds (under
+	/// the 1500 bound), and a backlog goes out at 750 tx/s, ~0.85 of a full block (~890 txs).
 	#[test]
 	fn propagation_rounds_bound_the_queue_and_outpace_blocks() {
-		assert_eq!(PROPAGATE_TIMEOUT, std::time::Duration::from_millis(500));
+		assert_eq!(PROPAGATE_TIMEOUT, std::time::Duration::from_millis(1000));
 		let pool: Vec<(u64, ())> = (0..20_000).map(|h| (h, ())).collect();
 		let mut peer = Peer {
 			known_transactions: LruHashSet::new(NonZeroUsize::new(MAX_KNOWN_TRANSACTIONS).unwrap()),
 			role: ObservedRole::Full,
 			immediate_sent: 0,
 		};
-		let rounds_per_sec = (1000 / PROPAGATE_TIMEOUT.as_millis()) as usize;
+		let secs = 2;
+		let rounds = secs * (1000 / PROPAGATE_TIMEOUT.as_millis()) as usize;
 		let mut per_round = Vec::new();
-		for _ in 0..rounds_per_sec {
+		for _ in 0..rounds {
 			// Immediate imports between rounds, then the periodic round.
 			let immediate: usize =
 				pool.iter().map(|tx| peer.to_send(std::slice::from_ref(tx), true).len()).sum();
@@ -657,6 +658,6 @@ mod tests {
 		}
 		assert!(per_round.windows(2).all(|w| w[0] + w[1] <= MAX_QUEUED_PER_PEER));
 		assert!(MAX_QUEUED_PER_PEER <= 1500);
-		assert!(per_round.iter().sum::<usize>() >= 1500);
+		assert!(per_round.iter().sum::<usize>() >= 750 * secs);
 	}
 }

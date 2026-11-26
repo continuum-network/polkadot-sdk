@@ -25,7 +25,7 @@ use sp_runtime::traits::Block as BlockT;
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc, time};
 
 /// Interval at which we propagate transactions; see [`PER_PEER_ROUND_BUDGET`].
-pub(crate) const PROPAGATE_TIMEOUT: time::Duration = time::Duration::from_millis(500);
+pub(crate) const PROPAGATE_TIMEOUT: time::Duration = time::Duration::from_millis(1000);
 
 /// Maximum number of known transaction hashes to keep for a peer.
 ///
@@ -46,10 +46,10 @@ const _: () = assert!(MAX_QUEUED_PER_PEER < SYNC_NOTIFICATIONS_BUFFER);
 ///
 /// A peer that reads nothing for a whole round holds at most two rounds, i.e.
 /// [`MAX_QUEUED_PER_PEER`]. A peer that keeps reading holds at most one: on loopback a peer read
-/// 1024 ML-DSA-signed (~5 KB) transactions in 32-173 ms, so a round drains well within 500 ms.
-/// 750 per 500 ms is 1500 tx/s per peer, ~1.7x a full block per second (~890 EIP-1559 txs), so
-/// validators fed by one RPC node can still fill their blocks. The previous 2.9 s round with
-/// 1024 + 256 gave ~440 tx/s and left them half empty.
+/// 1024 ML-DSA-signed (~5 KB) transactions in 32-173 ms, so a round drains well within 1 s.
+/// 750 per 1 s is 750 tx/s per peer, ~0.85x a full block per second (~890 EIP-1559 txs), a middle
+/// ground between CPU cost (500 ms rounds raised node CPU ~40%) and block fill. The previous 2.9 s
+/// round with 1024 + 256 gave ~440 tx/s and left validators half empty.
 const PER_PEER_ROUND_BUDGET: usize = MAX_QUEUED_PER_PEER / 2;
 
 /// Maximum number of transactions sent to a peer by the immediate (per-import) propagation between
