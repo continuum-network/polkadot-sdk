@@ -269,7 +269,8 @@ where
 
 		// Private and public keys configuration.
 		// Continuum: `into_keypair` returns a full libp2p `Keypair` (ML-DSA-65). Do not cast
-		// to ed25519: Noise identity_sig must use the same ML-DSA key as the PeerId.
+		// to ed25519: the PQ TLS transport (`crate::pq_tls`) uses this ML-DSA key as its
+		// certificate key and derives the PeerId from it.
 		let local_identity = network_config.node_key.clone().into_keypair()?;
 		let local_public = local_identity.public();
 		let local_peer_id: PeerId = local_public.to_peer_id();
