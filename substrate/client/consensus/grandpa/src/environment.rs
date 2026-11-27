@@ -745,9 +745,52 @@ pub fn equivocation_report_disposition(
 	}
 }
 
+/// Continuum: ML-DSA signatures are randomized, so an honest voter that restarts and re-signs
+/// the same vote produces a different signature. finality-grandpa imports votes from commits and
+/// catch-ups without the gossip-layer `dedup_signed_votes` and flags same-vote/different-signature
+/// as an equivocation; that is not one, so it must not be reported.
+fn is_resigned_same_vote<Id, V: PartialEq, S>(
+	equivocation: &finality_grandpa::Equivocation<Id, V, S>,
+) -> bool {
+	equivocation.first.0 == equivocation.second.0
+}
+
 #[cfg(test)]
 mod equivocation_disposition_tests {
-	use super::{equivocation_report_disposition, EquivocationReportDisposition};
+	use super::{
+		equivocation_report_disposition, is_resigned_same_vote, EquivocationReportDisposition,
+	};
+	use finality_grandpa::{Equivocation, Precommit, Prevote};
+	use sp_core::H256;
+
+	fn equivocation<V>(first: V, second: V) -> Equivocation<u8, V, Vec<u8>> {
+		Equivocation {
+			round_number: 1,
+			identity: 0,
+			first: (first, vec![1]),
+			second: (second, vec![2]),
+		}
+	}
+
+	#[test]
+	fn resigned_identical_vote_is_not_an_equivocation() {
+		let a = H256::repeat_byte(1);
+		assert!(is_resigned_same_vote(&equivocation(Prevote::new(a, 1u64), Prevote::new(a, 1))));
+		assert!(is_resigned_same_vote(&equivocation(
+			Precommit::new(a, 1u64),
+			Precommit::new(a, 1)
+		)));
+	}
+
+	#[test]
+	fn different_targets_remain_an_equivocation() {
+		let (a, b) = (H256::repeat_byte(1), H256::repeat_byte(2));
+		assert!(!is_resigned_same_vote(&equivocation(Prevote::new(a, 1u64), Prevote::new(b, 1))));
+		assert!(!is_resigned_same_vote(&equivocation(
+			Precommit::new(a, 1u64),
+			Precommit::new(a, 2)
+		)));
+	}
 
 	/// ML-DSA-65 / Dilithium3 public key length (NIST FIPS 204).
 	const DILITHIUM_PUBLIC_KEY_LEN: usize = 1952;
@@ -1342,6 +1385,13 @@ where
 			Self::Signature,
 		>,
 	) {
+		if is_resigned_same_vote(&equivocation) {
+			debug!(
+				target: LOG_TARGET,
+				"Ignoring re-signed identical prevote (not an equivocation): {:?}", equivocation
+			);
+			return;
+		}
 		warn!(
 			target: LOG_TARGET,
 			"Detected prevote equivocation in the finality worker: {:?}", equivocation
@@ -1361,6 +1411,13 @@ where
 			Self::Signature,
 		>,
 	) {
+		if is_resigned_same_vote(&equivocation) {
+			debug!(
+				target: LOG_TARGET,
+				"Ignoring re-signed identical precommit (not an equivocation): {:?}", equivocation
+			);
+			return;
+		}
 		warn!(
 			target: LOG_TARGET,
 			"Detected precommit equivocation in the finality worker: {:?}", equivocation
